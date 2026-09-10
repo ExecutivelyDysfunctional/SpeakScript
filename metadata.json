@@ -1,0 +1,6 @@
+{
+  "name": "Transcribe AI",
+  "description": "Analyze audio files, transcribe spoken content, and identify speakers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
