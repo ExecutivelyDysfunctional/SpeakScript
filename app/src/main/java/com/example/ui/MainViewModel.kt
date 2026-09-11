@@ -354,13 +354,39 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             val updatedRecord = record.copy(speakerName = newSpeakerName)
             repository?.insert(updatedRecord)
+            
+            try {
+                if (auth.currentUser != null) {
+                    firestore.collection("transcriptions")
+                        .document(updatedRecord.id)
+                        .set(updatedRecord)
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
         }
     }
 
     fun deleteTranscriptions(ids: List<String>) {
         viewModelScope.launch {
             repository?.deleteTranscriptions(ids)
+            
+            try {
+                if (auth.currentUser != null) {
+                    ids.forEach { id ->
+                        firestore.collection("transcriptions")
+                            .document(id)
+                            .delete()
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
         }
+    }
+
+    fun syncTranscriptions() {
+        loadTranscriptions()
     }
 
     private fun saveTranscription(text: String, audioUriString: String? = null, summary: String? = null) {

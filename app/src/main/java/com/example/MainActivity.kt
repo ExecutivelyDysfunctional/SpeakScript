@@ -54,6 +54,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Sync
 
 import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.clickable
@@ -401,9 +402,16 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                 Text("Delete (${selectedIds.size})", color = MaterialTheme.colorScheme.error)
                             }
                         }
-                    } else if (uiState.history.isNotEmpty()) {
-                        TextButton(onClick = { isSelectionMode = true }) {
-                            Text("Select")
+                    } else {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = { viewModel.syncTranscriptions() }) {
+                                Icon(Icons.Default.Sync, contentDescription = "Sync with Cloud")
+                            }
+                            if (uiState.history.isNotEmpty()) {
+                                TextButton(onClick = { isSelectionMode = true }) {
+                                    Text("Select")
+                                }
+                            }
                         }
                     }
                 }
