@@ -7,6 +7,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -38,6 +41,8 @@ import kotlinx.coroutines.launch
 import android.media.MediaPlayer
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
@@ -59,6 +64,61 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.TextButton
+
+@Composable
+fun TranscriptView(transcript: String, keywords: List<String>) {
+    val speakerRegex = Regex("(?m)^\\s*(?:\\*\\*)?([A-Za-z0-9 _\\-]{2,30})(?:\\*\\*)?:")
+    val matches = speakerRegex.findAll(transcript).toList()
+    
+    if (matches.isEmpty()) {
+        Text(highlightKeywords(transcript, keywords))
+        return
+    }
+    
+    val colors = listOf(
+        MaterialTheme.colorScheme.primary,
+        MaterialTheme.colorScheme.secondary,
+        MaterialTheme.colorScheme.tertiary,
+        MaterialTheme.colorScheme.error,
+        androidx.compose.ui.graphics.Color(0xFFE91E63),
+        androidx.compose.ui.graphics.Color(0xFF9C27B0),
+        androidx.compose.ui.graphics.Color(0xFF00BCD4),
+        androidx.compose.ui.graphics.Color(0xFFFF9800)
+    )
+    val speakerColors = remember { mutableMapOf<String, androidx.compose.ui.graphics.Color>() }
+    var colorIndex by remember { mutableIntStateOf(0) }
+    
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        for (i in matches.indices) {
+            val match = matches[i]
+            val speaker = match.groupValues[1].trim()
+            val start = match.range.last + 1
+            val end = if (i + 1 < matches.size) matches[i + 1].range.first else transcript.length
+            val content = transcript.substring(start, end).trim()
+            
+            val color = speakerColors.getOrPut(speaker) {
+                colors[colorIndex++ % colors.size]
+            }
+            
+            Column {
+                Surface(
+                    color = color.copy(alpha = 0.1f),
+                    shape = MaterialTheme.shapes.small
+                ) {
+                    Text(
+                        text = speaker,
+                        color = color,
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(highlightKeywords(content, keywords), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
+    }
+}
 
 @Composable
 fun highlightKeywords(text: String, keywords: List<String>): AnnotatedString {
@@ -188,7 +248,8 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             modifier = Modifier
                 .padding(padding)
                 .padding(16.dp)
-                .fillMaxSize(),
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             if (!uiState.isAuthenticated) {
@@ -434,8 +495,8 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     (record.speakerName?.lowercase()?.contains(query) == true)
                 }
 
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(filteredHistory) { record ->
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    filteredHistory.forEach { record ->
                         val isSelected = selectedIds.contains(record.id)
                         Card(
                             modifier = Modifier
@@ -549,7 +610,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                     Spacer(modifier = Modifier.height(12.dp))
                                 }
 
-                                Text(highlightKeywords(record.text, defaultKeywords))
+                                TranscriptView(record.text, defaultKeywords)
                                 
                                 record.audioUri?.let { uriString ->
                                     Spacer(modifier = Modifier.height(4.dp))
@@ -602,6 +663,8 @@ fun AudioPlayerComponent(uriString: String) {
     var hasError by remember { mutableStateOf(false) }
     var progress by remember { mutableStateOf(0f) }
 
+    var playbackSpeed by remember { mutableStateOf(1.0f) }
+
     // Generate a consistent pseudo-random waveform based on the URI
     val waveformAmplitudes = remember(uriString) {
         val random = java.util.Random(uriString.hashCode().toLong())
@@ -626,72 +689,141 @@ fun AudioPlayerComponent(uriString: String) {
         }
     }
 
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
     ) {
-        IconButton(
-            onClick = {
-                try {
-                    if (isPlaying) {
-                        mediaPlayer?.pause()
-                        isPlaying = false
-                    } else {
-                        if (mediaPlayer == null) {
-                            val player = MediaPlayer()
-                            player.setDataSource(context, Uri.parse(uriString))
-                            player.setOnCompletionListener {
-                                isPlaying = false
-                                progress = 1f
-                            }
-                            player.prepare()
-                            mediaPlayer = player
-                        }
-                        mediaPlayer?.start()
-                        isPlaying = true
-                        hasError = false
-                    }
-                } catch (e: Exception) {
-                    hasError = true
-                    isPlaying = false
-                    mediaPlayer?.release()
-                    mediaPlayer = null
-                }
-            }
-        ) {
-            Icon(
-                imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Play",
-                tint = MaterialTheme.colorScheme.primary
-            )
-        }
-        
         if (hasError) {
             Text(
                 text = "Audio unavailable",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.padding(8.dp)
             )
         } else {
-            Row(
+            val primaryColor = MaterialTheme.colorScheme.primary
+            val surfaceVariantColor = MaterialTheme.colorScheme.surfaceVariant
+            
+            Canvas(
                 modifier = Modifier
-                    .weight(1f)
-                    .height(32.dp)
-                    .padding(horizontal = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .padding(horizontal = 8.dp, vertical = 8.dp)
             ) {
+                val barWidth = size.width / waveformAmplitudes.size
+                val gap = barWidth * 0.2f
+                val actualBarWidth = barWidth - gap
+                
                 waveformAmplitudes.forEachIndexed { index, amplitude ->
                     val isPlayed = index.toFloat() / waveformAmplitudes.size <= progress
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxHeight(amplitude)
-                            .padding(horizontal = 1.dp)
-                            .background(
-                                color = if (isPlayed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                                shape = CircleShape
-                            )
+                    val barHeight = size.height * amplitude
+                    val x = index * barWidth + gap / 2
+                    val y = (size.height - barHeight) / 2
+                    
+                    drawRoundRect(
+                        color = if (isPlayed) primaryColor else surfaceVariantColor,
+                        topLeft = androidx.compose.ui.geometry.Offset(x, y),
+                        size = androidx.compose.ui.geometry.Size(actualBarWidth, barHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(actualBarWidth / 2, actualBarWidth / 2)
+                    )
+                }
+            }
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = {
+                    val nextSpeed = when (playbackSpeed) {
+                        1.0f -> 1.5f
+                        1.5f -> 2.0f
+                        2.0f -> 0.5f
+                        0.5f -> 1.0f
+                        else -> 1.0f
+                    }
+                    playbackSpeed = nextSpeed
+                    mediaPlayer?.let {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                            try {
+                                it.playbackParams = it.playbackParams.setSpeed(nextSpeed)
+                            } catch (e: Exception) {
+                                // Ignore
+                            }
+                        }
+                    }
+                }) {
+                    Text("${playbackSpeed}x")
+                }
+                
+                IconButton(onClick = {
+                    mediaPlayer?.let {
+                        it.seekTo((it.currentPosition - 10000).coerceAtLeast(0))
+                        if (it.duration > 0) {
+                            progress = it.currentPosition.toFloat() / it.duration
+                        }
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.FastRewind,
+                        contentDescription = "Rewind 10s"
+                    )
+                }
+                
+                IconButton(
+                    onClick = {
+                        try {
+                            if (isPlaying) {
+                                mediaPlayer?.pause()
+                                isPlaying = false
+                            } else {
+                                if (mediaPlayer == null) {
+                                    val player = MediaPlayer()
+                                    player.setDataSource(context, Uri.parse(uriString))
+                                    player.setOnCompletionListener {
+                                        isPlaying = false
+                                        progress = 1f
+                                    }
+                                    player.prepare()
+                                    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                        try {
+                                            player.playbackParams = player.playbackParams.setSpeed(playbackSpeed)
+                                        } catch (e: Exception) {
+                                            // Ignore
+                                        }
+                                    }
+                                    mediaPlayer = player
+                                }
+                                mediaPlayer?.start()
+                                isPlaying = true
+                                hasError = false
+                            }
+                        } catch (e: Exception) {
+                            hasError = true
+                            isPlaying = false
+                            mediaPlayer?.release()
+                            mediaPlayer = null
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        contentDescription = if (isPlaying) "Pause" else "Play",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(36.dp)
+                    )
+                }
+                
+                IconButton(onClick = {
+                    mediaPlayer?.let {
+                        it.seekTo((it.currentPosition + 10000).coerceAtMost(it.duration))
+                        if (it.duration > 0) {
+                            progress = it.currentPosition.toFloat() / it.duration
+                        }
+                    }
+                }) {
+                    Icon(
+                        imageVector = Icons.Default.FastForward,
+                        contentDescription = "Forward 10s"
                     )
                 }
             }
