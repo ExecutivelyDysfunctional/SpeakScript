@@ -21,10 +21,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
 import java.io.File
 import java.util.UUID
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import org.json.JSONObject
 
 @Entity(tableName = "transcriptions")
 data class TranscriptionRecord(
@@ -32,7 +35,10 @@ data class TranscriptionRecord(
     val userId: String = "",
     val text: String = "",
     val timestamp: Long = System.currentTimeMillis(),
-    val audioUri: String? = null
+    val audioUri: String? = null,
+    val summary: String? = null,
+    val category: String? = null,
+    val speakerName: String? = null
 )
 
 class MainViewModel : ViewModel() {
@@ -200,21 +206,101 @@ class MainViewModel : ViewModel() {
 
                 _uiState.value = _uiState.value.copy(statusMessage = "Uploading & Transcribing (Gemini AI)...", progress = 0.8f)
 
-                val response = RetrofitClient.service.generateContent(
+                val response = RetrofitClient.service.generateContentStream(
                     model = "gemini-3.5-flash",
                     apiKey = apiKey,
                     request = request
                 )
                 
-                val resultText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No transcription found"
+                var accumulatedText = ""
+                var userId = "local_user"
+                try {
+                    userId = auth.currentUser?.uid ?: "local_user"
+                } catch (e: Exception) {}
+                val transcriptionId = UUID.randomUUID().toString()
+                var lastSaveTime = System.currentTimeMillis()
+                
+                withContext(Dispatchers.IO) {
+                    response.byteStream().bufferedReader().use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            if (line!!.startsWith("data: ")) {
+                                try {
+                                    val jsonStr = line!!.substring(6)
+                                    val chunk = JSONObject(jsonStr)
+                                    val candidates = chunk.optJSONArray("candidates")
+                                    if (candidates != null && candidates.length() > 0) {
+                                        val content = candidates.getJSONObject(0).optJSONObject("content")
+                                        val parts = content?.optJSONArray("parts")
+                                        if (parts != null && parts.length() > 0) {
+                                            val textPart = parts.getJSONObject(0).optString("text", "")
+                                            accumulatedText += textPart
+                                            
+                                            _uiState.value = _uiState.value.copy(
+                                                lastTranscription = accumulatedText,
+                                                progress = 0.8f
+                                            )
+                                            
+                                            val currentTime = System.currentTimeMillis()
+                                            if (currentTime - lastSaveTime > 2000) {
+                                                lastSaveTime = currentTime
+                                                val record = TranscriptionRecord(
+                                                    id = transcriptionId,
+                                                    userId = userId,
+                                                    text = accumulatedText,
+                                                    audioUri = audioUriString
+                                                )
+                                                repository?.insert(record)
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    // ignore parsing error for partial chunk
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                val resultText = accumulatedText.ifEmpty { "No transcription found" }
+                
+                _uiState.value = _uiState.value.copy(
+                    statusMessage = "Generating AI Summary...",
+                    progress = 0.9f,
+                    lastTranscription = resultText
+                )
+
+                val summaryPrompt = "Please provide a brief, AI-powered summary of the following transcription:\n\n$resultText"
+                val summaryRequest = GenerateContentRequest(
+                    contents = listOf(
+                        Content(parts = listOf(Part(text = summaryPrompt)))
+                    )
+                )
+
+                val summaryResponse = RetrofitClient.service.generateContent(
+                    model = "gemini-3.5-flash",
+                    apiKey = apiKey,
+                    request = summaryRequest
+                )
+
+                val summaryResultText = summaryResponse.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No summary generated"
+
                 _uiState.value = _uiState.value.copy(
                     isLoading = false, 
                     statusMessage = null,
                     progress = null,
-                    lastTranscription = resultText
+                    lastSummary = summaryResultText
                 )
                 
-                saveTranscription(resultText, audioUriString)
+                // Final save overriding the same transcription ID
+                val finalRecord = TranscriptionRecord(
+                    id = transcriptionId,
+                    userId = userId,
+                    text = resultText,
+                    audioUri = audioUriString,
+                    summary = summaryResultText
+                )
+                repository?.insert(finalRecord)
                 
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
@@ -257,7 +343,27 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    private fun saveTranscription(text: String, audioUriString: String? = null) {
+    fun updateCategory(record: TranscriptionRecord, newCategory: String) {
+        viewModelScope.launch {
+            val updatedRecord = record.copy(category = newCategory)
+            repository?.insert(updatedRecord)
+        }
+    }
+
+    fun updateSpeakerName(record: TranscriptionRecord, newSpeakerName: String) {
+        viewModelScope.launch {
+            val updatedRecord = record.copy(speakerName = newSpeakerName)
+            repository?.insert(updatedRecord)
+        }
+    }
+
+    fun deleteTranscriptions(ids: List<String>) {
+        viewModelScope.launch {
+            repository?.deleteTranscriptions(ids)
+        }
+    }
+
+    private fun saveTranscription(text: String, audioUriString: String? = null, summary: String? = null) {
         var user: com.google.firebase.auth.FirebaseUser? = null
         try {
             user = auth.currentUser
@@ -265,7 +371,7 @@ class MainViewModel : ViewModel() {
             // Firebase not initialized
         }
         val userId = user?.uid ?: "local_user"
-        val record = TranscriptionRecord(userId = userId, text = text, audioUri = audioUriString)
+        val record = TranscriptionRecord(userId = userId, text = text, audioUri = audioUriString, summary = summary)
         
         viewModelScope.launch {
             repository?.insert(record)
@@ -315,6 +421,15 @@ class MainViewModel : ViewModel() {
                 json.put("id", record.id)
                 json.put("timestamp", record.timestamp)
                 json.put("text", record.text)
+                if (record.summary != null) {
+                    json.put("summary", record.summary)
+                }
+                if (record.category != null) {
+                    json.put("category", record.category)
+                }
+                if (record.speakerName != null) {
+                    json.put("speakerName", record.speakerName)
+                }
                 
                 context.contentResolver.openOutputStream(uri)?.use { outputStream ->
                     outputStream.write(json.toString(4).toByteArray())
@@ -328,6 +443,14 @@ class MainViewModel : ViewModel() {
     fun clearError() {
         _uiState.value = _uiState.value.copy(error = null)
     }
+
+    fun setThemeMode(mode: ThemeMode) {
+        _uiState.value = _uiState.value.copy(themeMode = mode)
+    }
+}
+
+enum class ThemeMode {
+    LIGHT, DARK, SYSTEM
 }
 
 data class UiState(
@@ -338,7 +461,9 @@ data class UiState(
     val statusMessage: String? = null,
     val progress: Float? = null,
     val lastTranscription: String? = null,
+    val lastSummary: String? = null,
     val lastAnswer: String? = null,
     val history: List<TranscriptionRecord> = emptyList(),
-    val error: String? = null
+    val error: String? = null,
+    val themeMode: ThemeMode = ThemeMode.SYSTEM
 )

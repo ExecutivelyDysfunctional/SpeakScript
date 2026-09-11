@@ -13,4 +13,8 @@ class TranscriptionRepository(private val transcriptionDao: TranscriptionDao) {
     suspend fun clear() {
         transcriptionDao.clearAll()
     }
+
+    suspend fun deleteTranscriptions(ids: List<String>) {
+        transcriptionDao.deleteTranscriptions(ids)
+    }
 }

@@ -38,18 +38,75 @@ import kotlinx.coroutines.launch
 import android.media.MediaPlayer
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import kotlinx.coroutines.delay
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.AnnotatedString
+
+import androidx.compose.foundation.isSystemInDarkTheme
+import com.example.ui.ThemeMode
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.BrightnessAuto
+import androidx.compose.material.icons.filled.Check
+
+import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.TextButton
+
+@Composable
+fun highlightKeywords(text: String, keywords: List<String>): AnnotatedString {
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val backgroundColor = MaterialTheme.colorScheme.primaryContainer
+    
+    return remember(text, keywords, primaryColor, backgroundColor) {
+        if (keywords.isEmpty() || text.isBlank()) return@remember AnnotatedString(text)
+        
+        val pattern = keywords.joinToString("|") { Regex.escape(it) }
+        val regex = Regex("\\b($pattern)\\b", RegexOption.IGNORE_CASE)
+        
+        buildAnnotatedString {
+            append(text)
+            regex.findAll(text).forEach { matchResult ->
+                addStyle(
+                    style = SpanStyle(
+                        fontWeight = FontWeight.Bold,
+                        color = primaryColor,
+                        background = backgroundColor
+                    ),
+                    start = matchResult.range.first,
+                    end = matchResult.range.last + 1
+                )
+            }
+        }
+    }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme {
+            val viewModel: MainViewModel = viewModel()
+            val uiState by viewModel.uiState.collectAsState()
+            
+            val isDarkTheme = when (uiState.themeMode) {
+                ThemeMode.LIGHT -> false
+                ThemeMode.DARK -> true
+                ThemeMode.SYSTEM -> isSystemInDarkTheme()
+            }
+            
+            MyApplicationTheme(darkTheme = isDarkTheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    AppScreen()
+                    AppScreen(viewModel)
                 }
             }
         }
@@ -105,7 +162,24 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 title = { Text("Transcribe AI") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
+                ),
+                actions = {
+                    IconButton(onClick = {
+                        val nextMode = when (uiState.themeMode) {
+                            ThemeMode.SYSTEM -> ThemeMode.LIGHT
+                            ThemeMode.LIGHT -> ThemeMode.DARK
+                            ThemeMode.DARK -> ThemeMode.SYSTEM
+                        }
+                        viewModel.setThemeMode(nextMode)
+                    }) {
+                        val icon = when (uiState.themeMode) {
+                            ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
+                            ThemeMode.LIGHT -> Icons.Default.LightMode
+                            ThemeMode.DARK -> Icons.Default.DarkMode
+                        }
+                        Icon(icon, contentDescription = "Toggle Theme")
+                    }
+                }
             )
         }
     ) { padding ->
@@ -160,7 +234,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    FloatingActionButton(
+                    ExtendedFloatingActionButton(
                         onClick = {
                             if (!recordPermissionState.status.isGranted) {
                                 recordPermissionState.launchPermissionRequest()
@@ -171,13 +245,19 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                     viewModel.startRecording()
                                 }
                             }
+                        },
+                        containerColor = if (uiState.isRecording) MaterialTheme.colorScheme.errorContainer else FloatingActionButtonDefaults.containerColor,
+                        contentColor = if (uiState.isRecording) MaterialTheme.colorScheme.onErrorContainer else contentColorFor(FloatingActionButtonDefaults.containerColor),
+                        icon = {
+                            Icon(
+                                imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                                contentDescription = if (uiState.isRecording) "Stop Recording" else "Start Recording"
+                            )
+                        },
+                        text = {
+                            Text(if (uiState.isRecording) "Stop Recording" else "Record Audio")
                         }
-                    ) {
-                        Icon(
-                            imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                            contentDescription = if (uiState.isRecording) "Stop Recording" else "Start Recording"
-                        )
-                    }
+                    )
 
                     OutlinedButton(
                         onClick = {
@@ -219,11 +299,52 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     }
                 }
 
+                val defaultKeywords = remember {
+                    listOf(
+                        "ai", "api", "architecture", "android", "kotlin", "compose", "gemini",
+                        "meeting", "action item", "deadline", "roadmap", "revenue", "q1", "q2", "q3", "q4",
+                        "backend", "frontend", "database", "server", "cloud"
+                    )
+                }
+
                 uiState.lastTranscription?.let { text ->
                     Card(modifier = Modifier.fillMaxWidth()) {
                         Column(modifier = Modifier.padding(16.dp)) {
                             Text("Latest Transcription:", style = MaterialTheme.typography.titleMedium)
-                            Text(text)
+                            uiState.lastSummary?.let { summaryText ->
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Surface(
+                                    color = MaterialTheme.colorScheme.secondaryContainer,
+                                    shape = MaterialTheme.shapes.medium,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                imageVector = Icons.Default.AutoAwesome,
+                                                contentDescription = "Highlights",
+                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text(
+                                                "Highlights", 
+                                                style = MaterialTheme.typography.titleSmall, 
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            summaryText, 
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            color = MaterialTheme.colorScheme.onSecondaryContainer
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                            }
+                            
+                            Text(highlightKeywords(text, defaultKeywords))
                         }
                     }
                 }
@@ -254,16 +375,195 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     }
                 }
                 
-                Text("History", style = MaterialTheme.typography.titleLarge)
+                var historySearchQuery by remember { mutableStateOf("") }
+                var isSelectionMode by remember { mutableStateOf(false) }
+                var selectedIds by remember { mutableStateOf(setOf<String>()) }
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("History", style = MaterialTheme.typography.titleLarge)
+                    if (isSelectionMode) {
+                        Row {
+                            TextButton(onClick = {
+                                isSelectionMode = false
+                                selectedIds = emptySet()
+                            }) {
+                                Text("Cancel")
+                            }
+                            TextButton(onClick = {
+                                viewModel.deleteTranscriptions(selectedIds.toList())
+                                isSelectionMode = false
+                                selectedIds = emptySet()
+                            }, enabled = selectedIds.isNotEmpty()) {
+                                Text("Delete (${selectedIds.size})", color = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                    } else if (uiState.history.isNotEmpty()) {
+                        TextButton(onClick = { isSelectionMode = true }) {
+                            Text("Select")
+                        }
+                    }
+                }
+                
+                OutlinedTextField(
+                    value = historySearchQuery,
+                    onValueChange = { historySearchQuery = it },
+                    label = { Text("Search by date or speaker/keyword...") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                val dateFormat = remember { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()) }
+                val filteredHistory = uiState.history.filter { record ->
+                    val dateString = dateFormat.format(java.util.Date(record.timestamp))
+                    val query = historySearchQuery.lowercase()
+                    dateString.lowercase().contains(query) || 
+                    record.text.lowercase().contains(query) || 
+                    (record.summary?.lowercase()?.contains(query) == true) ||
+                    (record.category?.lowercase()?.contains(query) == true) ||
+                    (record.speakerName?.lowercase()?.contains(query) == true)
+                }
+
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(uiState.history) { record ->
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                Text(record.text)
+                    items(filteredHistory) { record ->
+                        val isSelected = selectedIds.contains(record.id)
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .then(
+                                    if (isSelectionMode) {
+                                        Modifier.clickable {
+                                            if (isSelected) {
+                                                selectedIds = selectedIds - record.id
+                                            } else {
+                                                selectedIds = selectedIds + record.id
+                                            }
+                                        }
+                                    } else Modifier
+                                ),
+                            colors = if (isSelected) CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                            ) else CardDefaults.cardColors()
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                if (isSelectionMode) {
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = { checked ->
+                                            if (checked) {
+                                                selectedIds = selectedIds + record.id
+                                            } else {
+                                                selectedIds = selectedIds - record.id
+                                            }
+                                        },
+                                        modifier = Modifier.padding(start = 16.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.padding(16.dp).weight(1f)) {
+                                    var editSpeakerMode by remember { mutableStateOf(false) }
+                                var tempSpeakerName by remember { mutableStateOf(record.speakerName ?: "") }
+
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    if (editSpeakerMode) {
+                                        OutlinedTextField(
+                                            value = tempSpeakerName,
+                                            onValueChange = { tempSpeakerName = it },
+                                            modifier = Modifier.weight(1f),
+                                            label = { Text("Speaker") },
+                                            singleLine = true,
+                                            trailingIcon = {
+                                                IconButton(onClick = {
+                                                    viewModel.updateSpeakerName(record, tempSpeakerName)
+                                                    editSpeakerMode = false
+                                                }) {
+                                                    Icon(Icons.Default.Check, "Save")
+                                                }
+                                            }
+                                        )
+                                    } else {
+                                        Column {
+                                            Text(
+                                                text = dateFormat.format(java.util.Date(record.timestamp)),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            if (!record.speakerName.isNullOrBlank()) {
+                                                Text(
+                                                    text = "Speaker: ${record.speakerName}",
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                        }
+                                        TextButton(onClick = { editSpeakerMode = true }) {
+                                            Text(if (record.speakerName.isNullOrBlank()) "Add Speaker" else "Edit")
+                                        }
+                                    }
+                                }
+                                
+                                Spacer(modifier = Modifier.height(4.dp))
+                                
+                                record.summary?.let { summaryText ->
+                                    Surface(
+                                        color = MaterialTheme.colorScheme.secondaryContainer,
+                                        shape = MaterialTheme.shapes.small,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Icon(
+                                                    imageVector = Icons.Default.AutoAwesome,
+                                                    contentDescription = "Highlights",
+                                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                    modifier = Modifier.size(16.dp)
+                                                )
+                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Text(
+                                                    "Highlights", 
+                                                    style = MaterialTheme.typography.labelMedium, 
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(
+                                                summaryText, 
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
+                                    }
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                }
+
+                                Text(highlightKeywords(record.text, defaultKeywords))
                                 
                                 record.audioUri?.let { uriString ->
                                     Spacer(modifier = Modifier.height(4.dp))
                                     AudioPlayerComponent(uriString)
+                                }
+                                
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    val categories = listOf("Work", "Personal", "Meeting")
+                                    categories.forEach { cat ->
+                                        FilterChip(
+                                            selected = record.category == cat,
+                                            onClick = { 
+                                                val newCategory = if (record.category == cat) null else cat
+                                                viewModel.updateCategory(record, newCategory ?: "")
+                                            },
+                                            label = { Text(cat) }
+                                        )
+                                    }
                                 }
                                 
                                 Spacer(modifier = Modifier.height(8.dp))
@@ -276,6 +576,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                 ) {
                                     Text("Export JSON")
                                 }
+                            }
                             }
                         }
                     }
@@ -291,6 +592,24 @@ fun AudioPlayerComponent(uriString: String) {
     var isPlaying by remember { mutableStateOf(false) }
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
     var hasError by remember { mutableStateOf(false) }
+    var progress by remember { mutableStateOf(0f) }
+
+    // Generate a consistent pseudo-random waveform based on the URI
+    val waveformAmplitudes = remember(uriString) {
+        val random = java.util.Random(uriString.hashCode().toLong())
+        List(40) { 0.2f + random.nextFloat() * 0.8f }
+    }
+
+    LaunchedEffect(isPlaying) {
+        while (isPlaying) {
+            mediaPlayer?.let {
+                if (it.duration > 0) {
+                    progress = it.currentPosition.toFloat() / it.duration
+                }
+            }
+            delay(50)
+        }
+    }
 
     DisposableEffect(uriString) {
         onDispose {
@@ -315,6 +634,7 @@ fun AudioPlayerComponent(uriString: String) {
                             player.setDataSource(context, Uri.parse(uriString))
                             player.setOnCompletionListener {
                                 isPlaying = false
+                                progress = 1f
                             }
                             player.prepare()
                             mediaPlayer = player
@@ -333,13 +653,40 @@ fun AudioPlayerComponent(uriString: String) {
         ) {
             Icon(
                 imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                contentDescription = if (isPlaying) "Pause" else "Play"
+                contentDescription = if (isPlaying) "Pause" else "Play",
+                tint = MaterialTheme.colorScheme.primary
             )
         }
-        Text(
-            text = if (hasError) "Audio unavailable" else "Play original audio",
-            style = MaterialTheme.typography.bodySmall,
-            color = if (hasError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
-        )
+        
+        if (hasError) {
+            Text(
+                text = "Audio unavailable",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(32.dp)
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                waveformAmplitudes.forEachIndexed { index, amplitude ->
+                    val isPlayed = index.toFloat() / waveformAmplitudes.size <= progress
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight(amplitude)
+                            .padding(horizontal = 1.dp)
+                            .background(
+                                color = if (isPlayed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                shape = CircleShape
+                            )
+                    )
+                }
+            }
+        }
     }
 }

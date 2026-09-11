@@ -17,4 +17,7 @@ interface TranscriptionDao {
 
     @Query("DELETE FROM transcriptions")
     suspend fun clearAll()
+
+    @Query("DELETE FROM transcriptions WHERE id IN (:ids)")
+    suspend fun deleteTranscriptions(ids: List<String>)
 }
