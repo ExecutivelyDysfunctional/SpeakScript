@@ -45,25 +45,51 @@ class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private val auth by lazy { FirebaseAuth.getInstance() }
+    private fun getAuthSafe(): FirebaseAuth? {
+        return try {
+            FirebaseAuth.getInstance()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     private val firestore by lazy { FirebaseFirestore.getInstance() }
     private var audioRecorder: AudioRecorder? = null
     private var repository: com.example.db.TranscriptionRepository? = null
     
     init {
-        try {
-            if (auth.currentUser != null) {
+        val firebaseAuth = getAuthSafe()
+        if (firebaseAuth != null) {
+            try {
+                firebaseAuth.addAuthStateListener { authState ->
+                    val user = authState.currentUser
+                    if (user != null) {
+                        _uiState.value = _uiState.value.copy(
+                            isAuthenticated = true,
+                            isAnonymous = user.isAnonymous,
+                            userEmail = if (user.isAnonymous) "Anonymous Preview User" else user.email ?: "Anonymous Preview User"
+                        )
+                        loadTranscriptions()
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isAuthenticated = false,
+                            isAnonymous = true,
+                            userEmail = null
+                        )
+                        signInAnonymously()
+                    }
+                }
+            } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isAuthenticated = true,
-                    userEmail = auth.currentUser?.email ?: "Anonymous Preview User"
+                    isAnonymous = true,
+                    userEmail = "Offline Preview User"
                 )
-                loadTranscriptions()
-            } else {
-                signInAnonymously()
             }
-        } catch (e: Exception) {
+        } else {
             _uiState.value = _uiState.value.copy(
                 isAuthenticated = true,
+                isAnonymous = true,
                 userEmail = "Offline Preview User"
             )
         }
@@ -80,7 +106,7 @@ class MainViewModel : ViewModel() {
                 }
             }
             try {
-                if (auth.currentUser != null) {
+                if (getAuthSafe()?.currentUser != null) {
                     loadTranscriptions()
                 }
             } catch (e: Exception) {
@@ -90,25 +116,37 @@ class MainViewModel : ViewModel() {
     }
 
     private fun signInAnonymously() {
-        try {
-            auth.signInAnonymously()
-                .addOnSuccessListener { result ->
-                    val user = result.user
-                    _uiState.value = _uiState.value.copy(
-                        isAuthenticated = true,
-                        userEmail = user?.email ?: "Anonymous Preview User"
-                    )
-                    loadTranscriptions()
-                }
-                .addOnFailureListener { exception ->
-                    _uiState.value = _uiState.value.copy(
-                        isAuthenticated = true,
-                        userEmail = "Offline Preview User"
-                    )
-                }
-        } catch (e: Exception) {
+        val firebaseAuth = getAuthSafe()
+        if (firebaseAuth != null) {
+            try {
+                firebaseAuth.signInAnonymously()
+                    .addOnSuccessListener { result ->
+                        val user = result.user
+                        _uiState.value = _uiState.value.copy(
+                            isAuthenticated = true,
+                            isAnonymous = true,
+                            userEmail = user?.email ?: "Anonymous Preview User"
+                        )
+                        loadTranscriptions()
+                    }
+                    .addOnFailureListener { exception ->
+                        _uiState.value = _uiState.value.copy(
+                            isAuthenticated = true,
+                            isAnonymous = true,
+                            userEmail = "Offline Preview User"
+                        )
+                    }
+            } catch (e: Exception) {
+                _uiState.value = _uiState.value.copy(
+                    isAuthenticated = true,
+                    isAnonymous = true,
+                    userEmail = "Offline Preview User"
+                )
+            }
+        } else {
             _uiState.value = _uiState.value.copy(
                 isAuthenticated = true,
+                isAnonymous = true,
                 userEmail = "Offline Preview User"
             )
         }
@@ -215,7 +253,7 @@ class MainViewModel : ViewModel() {
                 var accumulatedText = ""
                 var userId = "local_user"
                 try {
-                    userId = auth.currentUser?.uid ?: "local_user"
+                    userId = getAuthSafe()?.currentUser?.uid ?: "local_user"
                 } catch (e: Exception) {}
                 val transcriptionId = UUID.randomUUID().toString()
                 var lastSaveTime = System.currentTimeMillis()
@@ -356,7 +394,7 @@ class MainViewModel : ViewModel() {
             repository?.insert(updatedRecord)
             
             try {
-                if (auth.currentUser != null) {
+                if (getAuthSafe()?.currentUser != null) {
                     firestore.collection("transcriptions")
                         .document(updatedRecord.id)
                         .set(updatedRecord)
@@ -372,7 +410,7 @@ class MainViewModel : ViewModel() {
             repository?.deleteTranscriptions(ids)
             
             try {
-                if (auth.currentUser != null) {
+                if (getAuthSafe()?.currentUser != null) {
                     ids.forEach { id ->
                         firestore.collection("transcriptions")
                             .document(id)
@@ -392,7 +430,7 @@ class MainViewModel : ViewModel() {
     private fun saveTranscription(text: String, audioUriString: String? = null, summary: String? = null) {
         var user: com.google.firebase.auth.FirebaseUser? = null
         try {
-            user = auth.currentUser
+            user = getAuthSafe()?.currentUser
         } catch (e: Exception) {
             // Firebase not initialized
         }
@@ -417,7 +455,7 @@ class MainViewModel : ViewModel() {
     private fun loadTranscriptions() {
         var user: com.google.firebase.auth.FirebaseUser? = null
         try {
-            user = auth.currentUser
+            user = getAuthSafe()?.currentUser
         } catch (e: Exception) {
             return
         }
@@ -481,6 +519,7 @@ enum class ThemeMode {
 
 data class UiState(
     val isAuthenticated: Boolean = false,
+    val isAnonymous: Boolean = true,
     val userEmail: String? = null,
     val isRecording: Boolean = false,
     val isLoading: Boolean = false,

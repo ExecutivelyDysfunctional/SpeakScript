@@ -44,6 +44,8 @@ import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Settings
+import com.example.ui.SettingsScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import kotlinx.coroutines.delay
@@ -181,6 +183,16 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     val uiState by viewModel.uiState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
     
+    var showSettings by remember { mutableStateOf(false) }
+    
+    if (showSettings) {
+        SettingsScreen(
+            uiState = uiState,
+            onNavigateBack = { showSettings = false }
+        )
+        return
+    }
+    
     val recordPermissionState = rememberPermissionState(
         Manifest.permission.RECORD_AUDIO
     )
@@ -240,6 +252,9 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                         }
                         Icon(icon, contentDescription = "Toggle Theme")
                     }
+                    IconButton(onClick = { showSettings = true }) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
                 }
             )
         }
@@ -252,44 +267,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            if (!uiState.isAuthenticated) {
-                Button(
-                    onClick = {
-                        coroutineScope.launch {
-                            val credentialManager = CredentialManager.create(context)
-                            val googleIdOption = GetGoogleIdOption.Builder()
-                                .setFilterByAuthorizedAccounts(false)
-                                .setServerClientId(context.getString(R.string.default_web_client_id))
-                                .setAutoSelectEnabled(true)
-                                .build()
-                            
-                            val request = GetCredentialRequest.Builder()
-                                .addCredentialOption(googleIdOption)
-                                .build()
-
-                            try {
-                                val result = credentialManager.getCredential(context, request)
-                                val credential = result.credential
-                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                                    val authCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                                    FirebaseAuth.getInstance().signInWithCredential(authCredential).addOnCompleteListener { task ->
-                                        if (task.isSuccessful) {
-                                            // Real app would reload state via auth listener
-                                        }
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                e.printStackTrace()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("Sign In with Google")
-                }
-            } else {
-                Text("Welcome, ${uiState.userEmail}")
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -650,7 +627,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                         }
                     }
                 }
-            }
         }
     }
 }
