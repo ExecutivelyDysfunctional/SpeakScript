@@ -30,6 +30,9 @@ fun SettingsScreen(
     uiState: UiState,
     onThemeModeChange: (ThemeMode) -> Unit,
     onSaveApiKey: (String) -> Unit,
+    onSaveOpenRouterApiKey: (String) -> Unit,
+    onSaveGroqApiKey: (String) -> Unit,
+    onAiProviderChange: (AiProvider) -> Unit,
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -59,7 +62,7 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Gemini API Key (BYOK)",
+                text = "AI Provider & API Keys",
                 style = MaterialTheme.typography.titleLarge
             )
 
@@ -74,11 +77,53 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "Bring Your Own Key",
+                        text = "Active AI Provider",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Enter your Google Gemini API key to enable AI transcription, summaries, and complex queries. Get your free key from Google AI Studio.",
+                        text = "Select which AI provider/backend to use for transcription, summaries, and queries.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    SingleChoiceSegmentedButtonRow(
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val providers = listOf(
+                            AiProvider.GEMINI to "Gemini",
+                            AiProvider.OPENROUTER to "OpenRouter",
+                            AiProvider.GROQ to "Groq"
+                        )
+                        providers.forEachIndexed { index, (provider, label) ->
+                            SegmentedButton(
+                                selected = uiState.aiProvider == provider,
+                                onClick = { onAiProviderChange(provider) },
+                                shape = SegmentedButtonDefaults.itemShape(index = index, count = providers.size)
+                            ) {
+                                Text(label)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Gemini BYOK Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Google Gemini API Key",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Enter your Google Gemini API key to enable AI transcription and analysis. Get your free key from Google AI Studio.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -101,18 +146,18 @@ fun SettingsScreen(
                         Button(
                             onClick = {
                                 onSaveApiKey(apiKeyInput)
-                                android.widget.Toast.makeText(context, "API Key saved successfully", android.widget.Toast.LENGTH_SHORT).show()
+                                android.widget.Toast.makeText(context, "Gemini API Key saved", android.widget.Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.weight(1f)
                         ) {
-                            Text("Save API Key")
+                            Text("Save Gemini Key")
                         }
                         if (uiState.customApiKey.isNotBlank()) {
                             OutlinedButton(
                                 onClick = {
                                     apiKeyInput = ""
                                     onSaveApiKey("")
-                                    android.widget.Toast.makeText(context, "Custom API Key cleared", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(context, "Gemini API Key cleared", android.widget.Toast.LENGTH_SHORT).show()
                                 }
                             ) {
                                 Text("Clear")
@@ -121,9 +166,141 @@ fun SettingsScreen(
                     }
 
                     Text(
-                        text = if (uiState.customApiKey.isNotBlank()) "Status: Using custom API key" else "Status: Using build-time configuration (or missing)",
+                        text = if (uiState.customApiKey.isNotBlank()) "Status: Using custom Gemini key" else "Status: Using build-time configuration (or missing)",
                         style = MaterialTheme.typography.labelSmall,
                         color = if (uiState.customApiKey.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            // OpenRouter API Key Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "OpenRouter (Free Models)",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Enter your OpenRouter API key to access free models like google/gemini-2.0-flash-lite:free or deepseek/deepseek-chat:free.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    var openRouterInput by remember(uiState.openRouterApiKey) { mutableStateOf(uiState.openRouterApiKey) }
+                    OutlinedTextField(
+                        value = openRouterInput,
+                        onValueChange = { openRouterInput = it },
+                        label = { Text("OpenRouter API Key") },
+                        placeholder = { Text("sk-or-v1-...") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                onSaveOpenRouterApiKey(openRouterInput)
+                                android.widget.Toast.makeText(context, "OpenRouter API Key saved", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Save OpenRouter Key")
+                        }
+                        if (uiState.openRouterApiKey.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    openRouterInput = ""
+                                    onSaveOpenRouterApiKey("")
+                                    android.widget.Toast.makeText(context, "OpenRouter API Key cleared", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = if (uiState.openRouterApiKey.isNotBlank()) "Status: OpenRouter API key configured" else "Status: No OpenRouter key entered",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (uiState.openRouterApiKey.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            // Groq API Key Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        text = "Groq API (Free Key)",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        text = "Enter your Groq API key for ultra-fast free inference with Llama 3.3 / Llama 3.1 models.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    var groqInput by remember(uiState.groqApiKey) { mutableStateOf(uiState.groqApiKey) }
+                    OutlinedTextField(
+                        value = groqInput,
+                        onValueChange = { groqInput = it },
+                        label = { Text("Groq API Key") },
+                        placeholder = { Text("gsk_...") },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                onSaveGroqApiKey(groqInput)
+                                android.widget.Toast.makeText(context, "Groq API Key saved", android.widget.Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Save Groq Key")
+                        }
+                        if (uiState.groqApiKey.isNotBlank()) {
+                            OutlinedButton(
+                                onClick = {
+                                    groqInput = ""
+                                    onSaveGroqApiKey("")
+                                    android.widget.Toast.makeText(context, "Groq API Key cleared", android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Text("Clear")
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = if (uiState.groqApiKey.isNotBlank()) "Status: Groq API key configured" else "Status: No Groq key entered",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (uiState.groqApiKey.isNotBlank()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

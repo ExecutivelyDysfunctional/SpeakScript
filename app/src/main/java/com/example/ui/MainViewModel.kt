@@ -54,6 +54,9 @@ class MainViewModel : ViewModel() {
     }
 
     private var customApiKey: String = ""
+    private var openRouterApiKey: String = ""
+    private var groqApiKey: String = ""
+    private var aiProvider: AiProvider = AiProvider.GEMINI
 
     private val firestore by lazy { FirebaseFirestore.getInstance() }
     private var audioRecorder: AudioRecorder? = null
@@ -62,7 +65,17 @@ class MainViewModel : ViewModel() {
     fun initApiKey(context: Context) {
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         customApiKey = prefs.getString("custom_api_key", "") ?: ""
-        _uiState.value = _uiState.value.copy(customApiKey = customApiKey)
+        openRouterApiKey = prefs.getString("openrouter_api_key", "") ?: ""
+        groqApiKey = prefs.getString("groq_api_key", "") ?: ""
+        val providerName = prefs.getString("ai_provider", AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
+        aiProvider = try { AiProvider.valueOf(providerName) } catch (e: Exception) { AiProvider.GEMINI }
+
+        _uiState.value = _uiState.value.copy(
+            customApiKey = customApiKey,
+            openRouterApiKey = openRouterApiKey,
+            groqApiKey = groqApiKey,
+            aiProvider = aiProvider
+        )
     }
 
     fun saveCustomApiKey(context: Context, key: String) {
@@ -72,8 +85,33 @@ class MainViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(customApiKey = customApiKey)
     }
 
+    fun saveOpenRouterApiKey(context: Context, key: String) {
+        openRouterApiKey = key.trim()
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("openrouter_api_key", openRouterApiKey).apply()
+        _uiState.value = _uiState.value.copy(openRouterApiKey = openRouterApiKey)
+    }
+
+    fun saveGroqApiKey(context: Context, key: String) {
+        groqApiKey = key.trim()
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("groq_api_key", groqApiKey).apply()
+        _uiState.value = _uiState.value.copy(groqApiKey = groqApiKey)
+    }
+
+    fun setAiProvider(context: Context, provider: AiProvider) {
+        aiProvider = provider
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("ai_provider", provider.name).apply()
+        _uiState.value = _uiState.value.copy(aiProvider = provider)
+    }
+
     fun getActiveApiKey(): String {
-        return if (customApiKey.isNotBlank()) customApiKey else BuildConfig.GEMINI_API_KEY
+        return when (aiProvider) {
+            AiProvider.OPENROUTER -> openRouterApiKey
+            AiProvider.GROQ -> groqApiKey
+            AiProvider.GEMINI -> if (customApiKey.isNotBlank()) customApiKey else BuildConfig.GEMINI_API_KEY
+        }
     }
     
     init {
@@ -532,6 +570,10 @@ class MainViewModel : ViewModel() {
     }
 }
 
+enum class AiProvider {
+    GEMINI, OPENROUTER, GROQ
+}
+
 enum class ThemeMode {
     LIGHT, DARK, SYSTEM
 }
@@ -550,5 +592,8 @@ data class UiState(
     val history: List<TranscriptionRecord> = emptyList(),
     val error: String? = null,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val customApiKey: String = ""
+    val customApiKey: String = "",
+    val openRouterApiKey: String = "",
+    val groqApiKey: String = "",
+    val aiProvider: AiProvider = AiProvider.GEMINI
 )

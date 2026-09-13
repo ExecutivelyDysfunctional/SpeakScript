@@ -257,6 +257,9 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             uiState = uiState,
             onThemeModeChange = { viewModel.setThemeMode(it) },
             onSaveApiKey = { viewModel.saveCustomApiKey(context, it) },
+            onSaveOpenRouterApiKey = { viewModel.saveOpenRouterApiKey(context, it) },
+            onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
+            onAiProviderChange = { viewModel.setAiProvider(context, it) },
             onNavigateBack = { showSettings = false }
         )
         return

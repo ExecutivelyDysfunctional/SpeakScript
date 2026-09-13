@@ -7,6 +7,7 @@ import okhttp3.ResponseBody
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
+import retrofit2.http.Header
 import retrofit2.http.POST
 import retrofit2.http.Query
 import retrofit2.http.Streaming
@@ -61,6 +62,31 @@ data class Candidate(
     val content: Content? = null
 )
 
+@JsonClass(generateAdapter = true)
+data class OpenAiChatRequest(
+    val model: String,
+    val messages: List<OpenAiMessage>,
+    val temperature: Float? = null,
+    val stream: Boolean? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenAiMessage(
+    val role: String,
+    val content: String
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenAiChatResponse(
+    val choices: List<OpenAiChoice>? = null
+)
+
+@JsonClass(generateAdapter = true)
+data class OpenAiChoice(
+    val message: OpenAiMessage? = null,
+    val delta: OpenAiMessage? = null
+)
+
 interface GeminiApiService {
     @POST("v1beta/models/{model}:generateContent")
     suspend fun generateContent(
@@ -75,6 +101,25 @@ interface GeminiApiService {
         @Path("model") model: String,
         @Query("key") apiKey: String,
         @Body request: GenerateContentRequest
+    ): ResponseBody
+}
+
+interface OpenAiCompatibleApiService {
+    @POST("v1/chat/completions")
+    suspend fun chatCompletions(
+        @Header("Authorization") authHeader: String,
+        @Header("HTTP-Referer") referrer: String? = null,
+        @Header("X-Title") title: String? = null,
+        @Body request: OpenAiChatRequest
+    ): OpenAiChatResponse
+
+    @POST("v1/chat/completions")
+    @Streaming
+    suspend fun chatCompletionsStream(
+        @Header("Authorization") authHeader: String,
+        @Header("HTTP-Referer") referrer: String? = null,
+        @Header("X-Title") title: String? = null,
+        @Body request: OpenAiChatRequest
     ): ResponseBody
 }
 
@@ -98,5 +143,51 @@ object RetrofitClient {
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
         retrofit.create(GeminiApiService::class.java)
+    }
+}
+
+object OpenRouterClient {
+    private const val BASE_URL = "https://openrouter.ai/api/"
+
+    private val moshi = Moshi.Builder()
+        .add(KotlinJsonAdapterFactory())
+        .build()
+
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    val service: OpenAiCompatibleApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl(BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+            .create(OpenAiCompatibleApiService::class.java)
+    }
+}
+
+object GroqClient {
+    private const val BASE_URL = "https://api.groq.com/openai/"
+
+    private val moshi = Moshi.Builder()
+        .add(KotlinJsonAdapterFactory())
+        .build()
+
+    private val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(120, TimeUnit.SECONDS)
+        .readTimeout(120, TimeUnit.SECONDS)
+        .writeTimeout(120, TimeUnit.SECONDS)
+        .build()
+
+    val service: OpenAiCompatibleApiService by lazy {
+        Retrofit.Builder()
+            .baseUrl(BASE_URL)
+            .client(okHttpClient)
+            .addConverterFactory(MoshiConverterFactory.create(moshi))
+            .build()
+            .create(OpenAiCompatibleApiService::class.java)
     }
 }
