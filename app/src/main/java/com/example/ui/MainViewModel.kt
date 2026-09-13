@@ -53,9 +53,28 @@ class MainViewModel : ViewModel() {
         }
     }
 
+    private var customApiKey: String = ""
+
     private val firestore by lazy { FirebaseFirestore.getInstance() }
     private var audioRecorder: AudioRecorder? = null
     private var repository: com.example.db.TranscriptionRepository? = null
+
+    fun initApiKey(context: Context) {
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        customApiKey = prefs.getString("custom_api_key", "") ?: ""
+        _uiState.value = _uiState.value.copy(customApiKey = customApiKey)
+    }
+
+    fun saveCustomApiKey(context: Context, key: String) {
+        customApiKey = key.trim()
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("custom_api_key", customApiKey).apply()
+        _uiState.value = _uiState.value.copy(customApiKey = customApiKey)
+    }
+
+    fun getActiveApiKey(): String {
+        return if (customApiKey.isNotBlank()) customApiKey else BuildConfig.GEMINI_API_KEY
+    }
     
     init {
         val firebaseAuth = getAuthSafe()
@@ -221,7 +240,7 @@ class MainViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Encoding audio for Gemini...", progress = 0.5f)
         viewModelScope.launch {
             try {
-                val apiKey = BuildConfig.GEMINI_API_KEY
+                val apiKey = getActiveApiKey()
                 val base64Audio = Base64.encodeToString(bytes, Base64.NO_WRAP)
                 
                 val prompt = "Please transcribe this audio. Identify the different speakers and include timestamps for when each speaker speaks. Output the result with speaker labels clearly formatted as a script, for example:\n[00:12] Speaker A: Hello\n[00:15] Speaker B: Hi there"
@@ -350,7 +369,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Querying Gemini (High Thinking)...", progress = 0.5f)
             try {
-                val apiKey = BuildConfig.GEMINI_API_KEY
+                val apiKey = getActiveApiKey()
                 val request = GenerateContentRequest(
                     contents = listOf(
                         Content(
@@ -530,5 +549,6 @@ data class UiState(
     val lastAnswer: String? = null,
     val history: List<TranscriptionRecord> = emptyList(),
     val error: String? = null,
-    val themeMode: ThemeMode = ThemeMode.SYSTEM
+    val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val customApiKey: String = ""
 )

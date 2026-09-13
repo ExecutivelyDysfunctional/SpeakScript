@@ -256,6 +256,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         SettingsScreen(
             uiState = uiState,
             onThemeModeChange = { viewModel.setThemeMode(it) },
+            onSaveApiKey = { viewModel.saveCustomApiKey(context, it) },
             onNavigateBack = { showSettings = false }
         )
         return
@@ -288,6 +289,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     LaunchedEffect(Unit) {
         viewModel.initAudioRecorder(context)
         viewModel.initDatabase(context)
+        viewModel.initApiKey(context)
     }
 
     LaunchedEffect(uiState.error) {
@@ -320,6 +322,40 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+                val activeKey = viewModel.getActiveApiKey()
+                if (activeKey.isBlank()) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Text(
+                                text = "API Key Missing",
+                                style = MaterialTheme.typography.titleMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "No Gemini API key found. Please configure your API key in Settings to use transcription and AI features.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Button(
+                                onClick = { showSettings = true },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.error,
+                                    contentColor = MaterialTheme.colorScheme.onError
+                                )
+                            ) {
+                                Text("Open Settings")
+                            }
+                        }
+                    }
+                }
                 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
