@@ -57,15 +57,82 @@ import androidx.compose.ui.text.AnnotatedString
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.example.ui.ThemeMode
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.LightMode
-import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Sync
 
 import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.TextButton
+import androidx.compose.animation.core.*
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+
+@Composable
+fun ProcessingWaveformVisualizer(
+    modifier: Modifier = Modifier,
+    barCount: Int = 28
+) {
+    val infiniteTransition = rememberInfiniteTransition(label = "processing_waveform")
+    val phase by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = (2 * Math.PI).toFloat(),
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1400, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "waveform_phase"
+    )
+    val pulse by infiniteTransition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.15f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 700, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "waveform_pulse"
+    )
+
+    val primaryColor = MaterialTheme.colorScheme.primary
+    val secondaryColor = MaterialTheme.colorScheme.tertiary
+
+    Canvas(
+        modifier = modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        val barWidth = size.width / barCount
+        val gap = barWidth * 0.28f
+        val actualBarWidth = (barWidth - gap).coerceAtLeast(2f)
+        val maxHeight = size.height
+
+        for (i in 0 until barCount) {
+            val normalizedX = i.toFloat() / (barCount - 1).coerceAtLeast(1)
+            // Bell-shaped window to taper outer edges
+            val window = kotlin.math.sin(normalizedX * Math.PI.toFloat()).coerceAtLeast(0.2f)
+            
+            // Dual frequency traveling wave
+            val wave1 = kotlin.math.sin(phase + i * 0.45f)
+            val wave2 = kotlin.math.cos(phase * 1.5f + i * 0.25f)
+            val combined = (wave1 + wave2 + 2f) / 4f
+            
+            val amplitude = (combined * window * pulse).coerceIn(0.12f, 1.0f)
+            val barHeight = (maxHeight * amplitude).coerceAtLeast(actualBarWidth)
+            val x = i * barWidth + gap / 2
+            val y = (size.height - barHeight) / 2
+
+            val barColor = androidx.compose.ui.graphics.lerp(primaryColor, secondaryColor, normalizedX)
+
+            drawRoundRect(
+                color = barColor,
+                topLeft = androidx.compose.ui.geometry.Offset(x, y),
+                size = androidx.compose.ui.geometry.Size(actualBarWidth, barHeight),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(actualBarWidth / 2, actualBarWidth / 2)
+            )
+        }
+    }
+}
 
 @Composable
 fun TranscriptView(transcript: String, keywords: List<String>) {
@@ -188,6 +255,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     if (showSettings) {
         SettingsScreen(
             uiState = uiState,
+            onThemeModeChange = { viewModel.setThemeMode(it) },
             onNavigateBack = { showSettings = false }
         )
         return
@@ -237,21 +305,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
                 actions = {
-                    IconButton(onClick = {
-                        val nextMode = when (uiState.themeMode) {
-                            ThemeMode.SYSTEM -> ThemeMode.LIGHT
-                            ThemeMode.LIGHT -> ThemeMode.DARK
-                            ThemeMode.DARK -> ThemeMode.SYSTEM
-                        }
-                        viewModel.setThemeMode(nextMode)
-                    }) {
-                        val icon = when (uiState.themeMode) {
-                            ThemeMode.SYSTEM -> Icons.Default.BrightnessAuto
-                            ThemeMode.LIGHT -> Icons.Default.LightMode
-                            ThemeMode.DARK -> Icons.Default.DarkMode
-                        }
-                        Icon(icon, contentDescription = "Toggle Theme")
-                    }
                     IconButton(onClick = { showSettings = true }) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
@@ -309,31 +362,52 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 }
 
                 if (uiState.isLoading) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        shape = MaterialTheme.shapes.medium
                     ) {
-                        uiState.statusMessage?.let { msg ->
-                            Text(
-                                text = msg,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        
-                        val progressValue = uiState.progress
-                        if (progressValue != null) {
-                            LinearProgressIndicator(
-                                progress = progressValue,
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = uiState.statusMessage ?: "Processing audio...",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            }
+                            
+                            ProcessingWaveformVisualizer(
                                 modifier = Modifier.fillMaxWidth()
                             )
-                        } else {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            
+                            val progressValue = uiState.progress
+                            if (progressValue != null) {
+                                LinearProgressIndicator(
+                                    progress = { progressValue },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            } else {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                         }
                     }
                 }

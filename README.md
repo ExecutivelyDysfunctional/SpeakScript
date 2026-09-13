@@ -9,6 +9,7 @@
 ### 1. High-Fidelity Audio Recording & Audio File Picker
 - **One-Tap Live Recording**: Record microphone audio in compressed AAC format with runtime permission handling.
 - **Audio File Import**: Select any local `.aac` / `.m4a` / audio file from device storage to transcribe pre-recorded meetings, interviews, or lectures.
+- **Processing Waveform Visualizer**: Features a dynamic animated multi-bar harmonic waveform visualizer that undulates with dual-frequency wave motion while an audio file is being uploaded and processed by Gemini.
 
 ### 2. Gemini Real-Time Streaming Transcription & Speaker Diarization
 - **Live Streaming Output**: Displays streaming transcript text dynamically in real time via Server-Sent Events (SSE) from the Gemini API.
@@ -43,7 +44,7 @@
 
 ### 8. Adaptive UI & Theme Switching
 - **Material 3 Design**: Clean typography, standard 8dp grid spacing, and accessible touch targets.
-- **Theme Modes**: Seamlessly toggle between **Light**, **Dark**, and **System Default** themes using the app bar action button.
+- **Theme Modes**: Configure **Light**, **Dark**, or **System Default** themes with dedicated segmented buttons and a dark mode toggle located on the Settings screen.
 
 ---
 
@@ -117,7 +118,8 @@ app/src/main/java/com/example/
 3. Tap the back button to return to the main transcription dashboard.
 
 ### Changing Themes
-- Tap the **Brightness / Palette** icon in the top app bar to cycle between **System Default**, **Light Mode**, and **Dark Mode**.
+1. Tap the **Settings (gear)** icon in the top app bar.
+2. In the **Appearance** section, select between **System**, **Light**, or **Dark** mode using the segmented buttons, or toggle the **Dark Theme** switch directly.
 
 ---
 
