@@ -1,5 +1,10 @@
 package com.example.ui
 
+import android.app.Activity
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,16 +20,40 @@ import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudDone
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.CustomCredential
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
+import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import com.example.R
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+
+private const val APP_PACKAGE_NAME = "com.aistudio.transcribeai.xyzq"
+private const val APP_DEBUG_SHA1 = "B5:9F:F2:77:10:96:D0:E2:EF:73:0C:86:98:1F:DE:D4:4C:D6:66:63"
+
+private fun Context.findActivity(): Activity? {
+    var current = this
+    while (current is ContextWrapper) {
+        if (current is Activity) return current
+        current = current.baseContext
+    }
+    return null
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,11 +64,48 @@ fun SettingsScreen(
     onSaveOpenRouterApiKey: (String) -> Unit,
     onSaveGroqApiKey: (String) -> Unit,
     onAiProviderChange: (AiProvider) -> Unit,
+    onSaveWebClientId: (String) -> Unit,
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var showNoCredentialsDialog by remember { mutableStateOf(false) }
+    var noCredentialsErrorMessage by remember { mutableStateOf("") }
+    var showEmailAuthDialog by remember { mutableStateOf(false) }
+    var showCloudSettingsDialog by remember { mutableStateOf(false) }
+    var isSigningIn by remember { mutableStateOf(false) }
+
+    val copyToClipboard: (String, String) -> Unit = { label, text ->
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText(label, text)
+        clipboard.setPrimaryClip(clip)
+        android.widget.Toast.makeText(context, "$label copied to clipboard", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    val serverClientId = if (uiState.webClientId.isNotBlank()) {
+        uiState.webClientId
+    } else {
+        context.getString(R.string.default_web_client_id)
+    }
+
+    val handleCredentialResult: (androidx.credentials.Credential) -> Unit = { credential ->
+        if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
+            try {
+                val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
+                val authCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
+                FirebaseAuth.getInstance().signInWithCredential(authCredential)
+                    .addOnSuccessListener {
+                        val email = it.user?.email ?: "Google Account"
+                        android.widget.Toast.makeText(context, "Signed in successfully as $email", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    .addOnFailureListener { e ->
+                        android.widget.Toast.makeText(context, "Sign in failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                    }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(context, "Failed to parse Google credentials: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -402,7 +468,7 @@ fun SettingsScreen(
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
             Text(
-                text = "Account",
+                text = "Account & Cloud Sync",
                 style = MaterialTheme.typography.titleLarge
             )
             
@@ -410,101 +476,472 @@ fun SettingsScreen(
 
             if (!uiState.isAuthenticated || isAnonymous) {
                 Text(
-                    text = "Sign in with Google to sync your transcriptions across devices securely.",
-                    style = MaterialTheme.typography.bodyMedium
+                    text = "Sign in to sync your transcriptions across devices. (All transcription features work offline without an account).",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                // Sign In with Google Button
                 Button(
                     onClick = {
                         coroutineScope.launch {
+                            isSigningIn = true
                             try {
-                                val credentialManager = CredentialManager.create(context)
-                                val googleIdOption = GetGoogleIdOption.Builder()
-                                    .setFilterByAuthorizedAccounts(false)
-                                    .setServerClientId(context.getString(R.string.default_web_client_id))
-                                    .setAutoSelectEnabled(false)
-                                    .build()
-                                
-                                val request = GetCredentialRequest.Builder()
-                                    .addCredentialOption(googleIdOption)
+                                val activity = context.findActivity() ?: (context as? Activity)
+                                if (activity == null) {
+                                    android.widget.Toast.makeText(context, "Cannot open sign-in: Activity context unavailable", android.widget.Toast.LENGTH_SHORT).show()
+                                    isSigningIn = false
+                                    return@launch
+                                }
+
+                                val credentialManager = CredentialManager.create(activity)
+
+                                // Attempt 1: GetSignInWithGoogleOption (Standard explicit button-click flow)
+                                val signInOption = GetSignInWithGoogleOption.Builder(serverClientId)
                                     .build()
 
-                                val result = credentialManager.getCredential(context, request)
-                                val credential = result.credential
-                                if (credential is CustomCredential && credential.type == GoogleIdTokenCredential.TYPE_GOOGLE_ID_TOKEN_CREDENTIAL) {
-                                    val googleIdTokenCredential = GoogleIdTokenCredential.createFrom(credential.data)
-                                    val authCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
-                                    FirebaseAuth.getInstance().signInWithCredential(authCredential)
-                                        .addOnSuccessListener {
-                                            android.widget.Toast.makeText(context, "Signed in successfully", android.widget.Toast.LENGTH_SHORT).show()
+                                val request = GetCredentialRequest.Builder()
+                                    .addCredentialOption(signInOption)
+                                    .build()
+
+                                try {
+                                    val result = credentialManager.getCredential(activity, request)
+                                    handleCredentialResult(result.credential)
+                                } catch (initialEx: Exception) {
+                                    if (initialEx is GetCredentialCancellationException || 
+                                        initialEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
+                                        (initialEx.message?.contains("cancel", ignoreCase = true) == true)) {
+                                        return@launch
+                                    }
+
+                                    // Attempt 2: Fallback to GetGoogleIdOption
+                                    try {
+                                        val googleIdOption = GetGoogleIdOption.Builder()
+                                            .setFilterByAuthorizedAccounts(false)
+                                            .setServerClientId(serverClientId)
+                                            .setAutoSelectEnabled(false)
+                                            .build()
+
+                                        val fallbackRequest = GetCredentialRequest.Builder()
+                                            .addCredentialOption(googleIdOption)
+                                            .build()
+
+                                        val fallbackResult = credentialManager.getCredential(activity, fallbackRequest)
+                                        handleCredentialResult(fallbackResult.credential)
+                                    } catch (fallbackEx: Exception) {
+                                        if (fallbackEx is GetCredentialCancellationException || 
+                                            fallbackEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
+                                            (fallbackEx.message?.contains("cancel", ignoreCase = true) == true)) {
+                                            return@launch
                                         }
-                                        .addOnFailureListener { e ->
-                                            android.widget.Toast.makeText(context, "Sign in failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-                                        }
+                                        fallbackEx.printStackTrace()
+                                        noCredentialsErrorMessage = fallbackEx.localizedMessage ?: fallbackEx.message ?: "No credentials available"
+                                        showNoCredentialsDialog = true
+                                    }
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
-                                val errorMsg = e.localizedMessage ?: e.message ?: ""
-                                if (errorMsg.contains("No credentials available", ignoreCase = true) || 
-                                    e.javaClass.simpleName.contains("NoCredentialException", ignoreCase = true)) {
+                                if (e !is GetCredentialCancellationException && !e.javaClass.simpleName.contains("Cancellation", ignoreCase = true)) {
+                                    noCredentialsErrorMessage = e.localizedMessage ?: e.message ?: "Authentication error"
                                     showNoCredentialsDialog = true
-                                } else {
-                                    android.widget.Toast.makeText(context, "Google Sign-In Error: $errorMsg", android.widget.Toast.LENGTH_LONG).show()
                                 }
+                            } finally {
+                                isSigningIn = false
                             }
                         }
                     },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSigningIn
                 ) {
-                    Text("Sign In with Google")
+                    if (isSigningIn) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.onPrimary
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Connecting to Google...")
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.AccountCircle,
+                            contentDescription = "Google",
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Sign In with Google")
+                    }
                 }
 
+                // Sign In with Email Button
+                OutlinedButton(
+                    onClick = { showEmailAuthDialog = true },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Email,
+                        contentDescription = "Email",
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Sign In with Email / Password")
+                }
+
+                // Cloud / Firebase Config Button
+                TextButton(
+                    onClick = { showCloudSettingsDialog = true },
+                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Settings",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("OAuth & Firebase Credentials Setup", style = MaterialTheme.typography.bodySmall)
+                }
+
+                // Dialog: Why "No credentials available" occurs & how to resolve
                 if (showNoCredentialsDialog) {
                     AlertDialog(
                         onDismissRequest = { showNoCredentialsDialog = false },
                         title = {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
-                                    imageVector = Icons.Default.Warning,
-                                    contentDescription = "Warning",
-                                    tint = MaterialTheme.colorScheme.error,
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Info",
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(24.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Google Sign-In Setup")
+                                Text("Google Sign-In Credentials")
                             }
                         },
                         text = {
-                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
                                 Text(
-                                    text = "Google Sign-In returned 'No credentials available'.",
+                                    text = "Why you are seeing 'No credentials available':",
                                     fontWeight = FontWeight.Bold,
                                     style = MaterialTheme.typography.bodyMedium
                                 )
                                 Text(
-                                    text = "This happens when there is no Google Account signed into this Android device or emulator.",
-                                    style = MaterialTheme.typography.bodyMedium
+                                    text = "Even if you are logged into multiple Google accounts on your phone, Google Play Services verifies whether this app's package name and SHA-1 certificate fingerprint are registered in Google Cloud / Firebase.",
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                                 Text(
-                                    text = "To resolve this:\n" +
-                                            "1. Go to your device's Android Settings.\n" +
-                                            "2. Select 'Passwords & accounts' (or 'Google').\n" +
-                                            "3. Tap 'Add account' and sign in with your Google account.\n" +
-                                            "4. Return to the app and try signing in again.\n\n" +
-                                            "Note: You can still use all transcription features locally without signing in!",
+                                    text = "If the build's SHA-1 fingerprint has not been added to your Google Cloud Console / Firebase project under an Android OAuth 2.0 Client ID, Google will not present your accounts to the app.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "App Identification Details:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text("Package: $APP_PACKAGE_NAME", style = MaterialTheme.typography.labelSmall)
+                                        Text("SHA-1: $APP_DEBUG_SHA1", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+
+                                Text(
+                                    text = "Options to continue:\n" +
+                                            "1. Local/Offline Mode: You can transcribe and analyze audio right now without signing in!\n" +
+                                            "2. Email Sign-In: Use Email/Password to sync across devices.\n" +
+                                            "3. Register SHA-1: In your Google Cloud / Firebase Console, add this SHA-1 to authorize Google Sign-In.",
+                                    style = MaterialTheme.typography.bodySmall
                                 )
                             }
                         },
                         confirmButton = {
-                            TextButton(onClick = { showNoCredentialsDialog = false }) {
-                                Text("Dismiss")
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = {
+                                        copyToClipboard("App Credentials", "Package: $APP_PACKAGE_NAME\nSHA-1: $APP_DEBUG_SHA1")
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Copy SHA-1")
+                                }
+                                Button(onClick = { showNoCredentialsDialog = false }) {
+                                    Text("Dismiss")
+                                }
                             }
                         }
                     )
                 }
+
+                // Dialog: Email / Password Sign In & Registration
+                if (showEmailAuthDialog) {
+                    var emailInput by remember { mutableStateOf("") }
+                    var passwordInput by remember { mutableStateOf("") }
+                    var isRegisterMode by remember { mutableStateOf(false) }
+                    var emailLoading by remember { mutableStateOf(false) }
+                    var emailErrorMessage by remember { mutableStateOf<String?>(null) }
+
+                    AlertDialog(
+                        onDismissRequest = { if (!emailLoading) showEmailAuthDialog = false },
+                        title = {
+                            Text(if (isRegisterMode) "Create Account" else "Sign In with Email")
+                        },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                Text(
+                                    text = if (isRegisterMode) 
+                                        "Enter your email and password to create a sync account."
+                                    else 
+                                        "Enter your email and password to sign in and sync your history.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+
+                                OutlinedTextField(
+                                    value = emailInput,
+                                    onValueChange = { emailInput = it; emailErrorMessage = null },
+                                    label = { Text("Email") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                OutlinedTextField(
+                                    value = passwordInput,
+                                    onValueChange = { passwordInput = it; emailErrorMessage = null },
+                                    label = { Text("Password") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                if (emailErrorMessage != null) {
+                                    Text(
+                                        text = emailErrorMessage ?: "",
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+
+                                TextButton(
+                                    onClick = { isRegisterMode = !isRegisterMode; emailErrorMessage = null },
+                                    modifier = Modifier.align(Alignment.End)
+                                ) {
+                                    Text(
+                                        text = if (isRegisterMode) "Already have an account? Sign In" else "Need an account? Create one",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(
+                                onClick = {
+                                    val email = emailInput.trim()
+                                    val password = passwordInput.trim()
+                                    if (email.isBlank() || password.isBlank()) {
+                                        emailErrorMessage = "Email and password cannot be empty."
+                                        return@Button
+                                    }
+                                    if (password.length < 6) {
+                                        emailErrorMessage = "Password must be at least 6 characters."
+                                        return@Button
+                                    }
+                                    emailLoading = true
+                                    val auth = FirebaseAuth.getInstance()
+                                    if (isRegisterMode) {
+                                        auth.createUserWithEmailAndPassword(email, password)
+                                            .addOnSuccessListener {
+                                                emailLoading = false
+                                                showEmailAuthDialog = false
+                                                android.widget.Toast.makeText(context, "Account created: $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                            .addOnFailureListener { e ->
+                                                emailLoading = false
+                                                emailErrorMessage = e.localizedMessage ?: "Registration failed"
+                                            }
+                                    } else {
+                                        auth.signInWithEmailAndPassword(email, password)
+                                            .addOnSuccessListener {
+                                                emailLoading = false
+                                                showEmailAuthDialog = false
+                                                android.widget.Toast.makeText(context, "Signed in as $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                            .addOnFailureListener { e ->
+                                                emailLoading = false
+                                                emailErrorMessage = e.localizedMessage ?: "Sign in failed"
+                                            }
+                                    }
+                                },
+                                enabled = !emailLoading
+                            ) {
+                                if (emailLoading) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(if (isRegisterMode) "Create Account" else "Sign In")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(
+                                onClick = { showEmailAuthDialog = false },
+                                enabled = !emailLoading
+                            ) {
+                                Text("Cancel")
+                            }
+                        }
+                    )
+                }
+
+                // Dialog: Cloud / OAuth Settings
+                if (showCloudSettingsDialog) {
+                    var customClientIdInput by remember(uiState.webClientId) { mutableStateOf(uiState.webClientId) }
+
+                    AlertDialog(
+                        onDismissRequest = { showCloudSettingsDialog = false },
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Settings,
+                                    contentDescription = "Cloud Settings",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("OAuth & Cloud Credentials")
+                            }
+                        },
+                        text = {
+                            Column(
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                Text(
+                                    text = "To enable Google Sign-In with your own Firebase / Google Cloud project, ensure the Android App certificate and Web Client ID match:",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("Package Name:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                            IconButton(
+                                                onClick = { copyToClipboard("Package Name", APP_PACKAGE_NAME) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                        Text(APP_PACKAGE_NAME, style = MaterialTheme.typography.bodySmall)
+
+                                        HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text("SHA-1 Fingerprint:", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
+                                            IconButton(
+                                                onClick = { copyToClipboard("SHA-1 Fingerprint", APP_DEBUG_SHA1) },
+                                                modifier = Modifier.size(24.dp)
+                                            ) {
+                                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                                            }
+                                        }
+                                        Text(APP_DEBUG_SHA1, style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+
+                                Text(
+                                    text = "Custom Web Client ID (Optional):",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+
+                                OutlinedTextField(
+                                    value = customClientIdInput,
+                                    onValueChange = { customClientIdInput = it },
+                                    placeholder = { Text(context.getString(R.string.default_web_client_id)) },
+                                    label = { Text("Web Client ID") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            customClientIdInput = ""
+                                            onSaveWebClientId("")
+                                            android.widget.Toast.makeText(context, "Reset to default Web Client ID", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Reset", style = MaterialTheme.typography.bodySmall)
+                                    }
+
+                                    Button(
+                                        onClick = {
+                                            onSaveWebClientId(customClientIdInput.trim())
+                                            android.widget.Toast.makeText(context, "Web Client ID saved", android.widget.Toast.LENGTH_SHORT).show()
+                                        },
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Text("Save", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+                            }
+                        },
+                        confirmButton = {
+                            Button(onClick = { showCloudSettingsDialog = false }) {
+                                Text("Done")
+                            }
+                        }
+                    )
+                }
+
             } else {
-                Text("Signed in as ${uiState.userEmail}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "Signed in as ${uiState.userEmail}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+
+                Text(
+                    text = "Transcriptions and summaries are automatically backed up to your account.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 
                 Button(
                     onClick = {

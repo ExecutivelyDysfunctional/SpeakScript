@@ -56,6 +56,7 @@ class MainViewModel : ViewModel() {
     private var customApiKey: String = ""
     private var openRouterApiKey: String = ""
     private var groqApiKey: String = ""
+    private var webClientId: String = ""
     private var aiProvider: AiProvider = AiProvider.GEMINI
 
     private val firestore by lazy { FirebaseFirestore.getInstance() }
@@ -66,6 +67,7 @@ class MainViewModel : ViewModel() {
         customApiKey = prefs.getString("custom_api_key", "") ?: ""
         openRouterApiKey = prefs.getString("openrouter_api_key", "") ?: ""
         groqApiKey = prefs.getString("groq_api_key", "") ?: ""
+        webClientId = prefs.getString("custom_web_client_id", "") ?: ""
         val providerName = prefs.getString("ai_provider", AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
         aiProvider = try { AiProvider.valueOf(providerName) } catch (e: Exception) { AiProvider.GEMINI }
 
@@ -73,8 +75,16 @@ class MainViewModel : ViewModel() {
             customApiKey = customApiKey,
             openRouterApiKey = openRouterApiKey,
             groqApiKey = groqApiKey,
+            webClientId = webClientId,
             aiProvider = aiProvider
         )
+    }
+
+    fun saveWebClientId(context: Context, id: String) {
+        webClientId = id.trim()
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putString("custom_web_client_id", webClientId).apply()
+        _uiState.value = _uiState.value.copy(webClientId = webClientId)
     }
 
     fun saveCustomApiKey(context: Context, key: String) {
@@ -700,5 +710,6 @@ data class UiState(
     val customApiKey: String = "",
     val openRouterApiKey: String = "",
     val groqApiKey: String = "",
-    val aiProvider: AiProvider = AiProvider.GEMINI
+    val aiProvider: AiProvider = AiProvider.GEMINI,
+    val webClientId: String = ""
 )

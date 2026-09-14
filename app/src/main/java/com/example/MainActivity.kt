@@ -258,6 +258,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             onSaveOpenRouterApiKey = { viewModel.saveOpenRouterApiKey(context, it) },
             onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
             onAiProviderChange = { viewModel.setAiProvider(context, it) },
+            onSaveWebClientId = { viewModel.saveWebClientId(context, it) },
             onNavigateBack = { showSettings = false }
         )
         return
