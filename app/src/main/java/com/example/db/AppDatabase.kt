@@ -6,7 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.ui.TranscriptionRecord
 
-@Database(entities = [TranscriptionRecord::class], version = 4, exportSchema = false)
+@Database(entities = [TranscriptionRecord::class], version = 5, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun transcriptionDao(): TranscriptionDao
 

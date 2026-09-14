@@ -14,7 +14,6 @@ import com.example.api.InlineData
 import com.example.api.Part
 import com.example.api.RetrofitClient
 import com.example.api.ThinkingConfig
-import com.example.audio.AudioRecorder
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,7 +37,8 @@ data class TranscriptionRecord(
     val audioUri: String? = null,
     val summary: String? = null,
     val category: String? = null,
-    val speakerName: String? = null
+    val speakerName: String? = null,
+    val modelName: String? = null
 )
 
 class MainViewModel : ViewModel() {
@@ -59,7 +59,6 @@ class MainViewModel : ViewModel() {
     private var aiProvider: AiProvider = AiProvider.GEMINI
 
     private val firestore by lazy { FirebaseFirestore.getInstance() }
-    private var audioRecorder: AudioRecorder? = null
     private var repository: com.example.db.TranscriptionRepository? = null
 
     fun initApiKey(context: Context) {
@@ -162,12 +161,59 @@ class MainViewModel : ViewModel() {
                     _uiState.value = _uiState.value.copy(history = list)
                 }
             }
+            insertSampleTranscriptions(context)
             try {
                 if (getAuthSafe()?.currentUser != null) {
                     loadTranscriptions()
                 }
             } catch (e: Exception) {
                 // Firebase not initialized, fallback to local only
+            }
+        }
+    }
+
+    private fun insertSampleTranscriptions(context: Context) {
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        val inserted = prefs.getBoolean("samples_inserted_v2", false)
+        if (!inserted) {
+            viewModelScope.launch {
+                val now = System.currentTimeMillis()
+                val sample1 = TranscriptionRecord(
+                    id = "sample_1",
+                    userId = "local_user",
+                    text = "[00:00] Speaker A: Good morning, team. Let's review the marketing launch date for the new productivity app. I think October 15th works best.\n[00:08] Speaker B: Good morning. October 15th gives us enough runway to finalize the beta feedback. I agree.",
+                    timestamp = now - 2 * 3600 * 1000L, // 2 hours ago (Today)
+                    summary = "The team discussed the marketing launch date for the new productivity app and agreed on October 15th to allow sufficient time for beta feedback.",
+                    category = "Meeting",
+                    speakerName = "Marketing Team",
+                    modelName = "Gemini 3.5 Flash"
+                )
+                val sample2 = TranscriptionRecord(
+                    id = "sample_2",
+                    userId = "local_user",
+                    text = "[00:00] Speaker A: Remind me to buy fresh milk, organic eggs, and some whole-wheat bread on my way back from the gym tonight. Oh, and pick up the dry cleaning as well.",
+                    timestamp = now - 28 * 3600 * 1000L, // ~28 hours ago (Yesterday)
+                    summary = "A personal reminder to buy milk, eggs, bread, and pick up dry cleaning after returning from the gym.",
+                    category = "Personal",
+                    speakerName = "Self",
+                    modelName = "Gemini 3.5 Flash"
+                )
+                val sample3 = TranscriptionRecord(
+                    id = "sample_3",
+                    userId = "local_user",
+                    text = "[00:00] Speaker A: We need to optimize the database queries. The landing page load time is currently averaging 4.2 seconds, which is unacceptable.\n[00:10] Speaker B: I'll profile the SQL joins and add indexes on the foreign keys. We should easily get it under 1.5 seconds.",
+                    timestamp = now - 5 * 24 * 3600 * 1000L, // 5 days ago (This Week)
+                    summary = "Discussion on optimizing database queries to reduce landing page load time from 4.2s to under 1.5s by adding indexes on foreign keys.",
+                    category = "Work",
+                    speakerName = "Engineering Team",
+                    modelName = "Gemini 3.1 Pro"
+                )
+                
+                repository?.insert(sample1)
+                repository?.insert(sample2)
+                repository?.insert(sample3)
+                
+                prefs.edit().putBoolean("samples_inserted_v2", true).apply()
             }
         }
     }
@@ -209,37 +255,102 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun initAudioRecorder(context: Context) {
-        if (audioRecorder == null) {
-            audioRecorder = AudioRecorder(context)
-        }
-    }
-
-    fun startRecording() {
-        if (audioRecorder?.startRecording() == true) {
-            _uiState.value = _uiState.value.copy(isRecording = true)
-        }
-    }
-
-    fun stopRecording() {
-        _uiState.value = _uiState.value.copy(isRecording = false, isLoading = true)
-        val file = audioRecorder?.stopRecording()
-        if (file != null && file.exists()) {
-            transcribeAudio(file)
-        } else {
-            _uiState.value = _uiState.value.copy(isLoading = false, error = "Failed to record audio")
-        }
-    }
-
     fun transcribeSelectedAudio(context: Context, uri: Uri) {
         _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Preparing selected file...", progress = 0.1f)
         transcribeAudioUri(context, uri)
+    }
+
+    private fun parseTimestampFromFileName(fileName: String): Long? {
+        val regex = "(\\d{4})[\\.\\-](\\d{2})[\\.\\-](\\d{2})_(\\d{2})[\\.\\-:](\\d{2})[\\.\\-:](\\d{2})".toRegex()
+        val matchResult = regex.find(fileName) ?: return null
+        return try {
+            val (yearStr, monthStr, dayStr, hourStr, minuteStr, secondStr) = matchResult.destructured
+            val calendar = java.util.Calendar.getInstance()
+            calendar.set(java.util.Calendar.YEAR, yearStr.toInt())
+            calendar.set(java.util.Calendar.MONTH, monthStr.toInt() - 1)
+            calendar.set(java.util.Calendar.DAY_OF_MONTH, dayStr.toInt())
+            calendar.set(java.util.Calendar.HOUR_OF_DAY, hourStr.toInt())
+            calendar.set(java.util.Calendar.MINUTE, minuteStr.toInt())
+            calendar.set(java.util.Calendar.SECOND, secondStr.toInt())
+            calendar.set(java.util.Calendar.MILLISECOND, 0)
+            calendar.timeInMillis
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    private fun getFileMetadata(context: Context, uri: Uri): Pair<String?, Long?> {
+        var displayName: String? = null
+        var lastModified: Long? = null
+        try {
+            val contentResolver = context.contentResolver
+            val cursor = contentResolver.query(uri, null, null, null, null)
+            cursor?.use {
+                if (it.moveToFirst()) {
+                    val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                    if (nameIndex != -1) {
+                        displayName = it.getString(nameIndex)
+                    }
+                    val lastModifiedIndex = it.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED)
+                    if (lastModifiedIndex != -1) {
+                        val lm = it.getLong(lastModifiedIndex)
+                        if (lm > 0) {
+                            lastModified = lm
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore
+        }
+
+        if (displayName == null) {
+            displayName = uri.lastPathSegment
+        }
+
+        if (lastModified == null) {
+            try {
+                if (uri.scheme == "file") {
+                    val file = uri.path?.let { File(it) }
+                    if (file != null && file.exists()) {
+                        lastModified = file.lastModified()
+                    }
+                } else if (uri.scheme == "content") {
+                    val cursor = context.contentResolver.query(
+                        uri,
+                        arrayOf(android.provider.MediaStore.MediaColumns.DATE_MODIFIED),
+                        null,
+                        null,
+                        null
+                    )
+                    cursor?.use {
+                        if (it.moveToFirst()) {
+                            val dateModifiedIndex = it.getColumnIndex(android.provider.MediaStore.MediaColumns.DATE_MODIFIED)
+                            if (dateModifiedIndex != -1) {
+                                val secs = it.getLong(dateModifiedIndex)
+                                if (secs > 0) {
+                                    lastModified = secs * 1000L
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+
+        return Pair(displayName, lastModified)
     }
 
     fun transcribeAudioUri(context: Context, uri: Uri) {
         _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Reading audio bytes...", progress = 0.3f)
         viewModelScope.launch {
             try {
+                val (displayName, lastModified) = getFileMetadata(context, uri)
+                val parsedTimestamp = displayName?.let { parseTimestampFromFileName(it) }
+                val customTimestamp = parsedTimestamp ?: lastModified ?: System.currentTimeMillis()
+
                 val inputStream = context.contentResolver.openInputStream(uri)
                 val bytes = inputStream?.use { it.readBytes() }
                 if (bytes == null || bytes.isEmpty()) {
@@ -247,34 +358,24 @@ class MainViewModel : ViewModel() {
                     return@launch
                 }
                 
-                // Save a local copy in cache to ensure playback availability later
-                val localFile = File(context.cacheDir, "imported_${System.currentTimeMillis()}.aac")
+                // Save a local copy in cache to ensure playback availability later using customTimestamp
+                val localFile = File(context.cacheDir, "imported_${customTimestamp}.aac")
                 localFile.writeBytes(bytes)
                 val localUriString = Uri.fromFile(localFile).toString()
                 
-                transcribeAudioBytes(bytes, "audio/aac", localUriString)
+                transcribeAudioBytes(bytes, "audio/aac", localUriString, customTimestamp)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
             }
         }
     }
 
-    private fun transcribeAudio(file: File) {
-        _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Reading recorded audio file...", progress = 0.3f)
-        try {
-            if (file.exists()) {
-                val bytes = file.readBytes()
-                val localUriString = Uri.fromFile(file).toString()
-                transcribeAudioBytes(bytes, "audio/aac", localUriString)
-            } else {
-                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = "Audio file does not exist.")
-            }
-        } catch (e: Exception) {
-            _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
-        }
-    }
-
-    private fun transcribeAudioBytes(bytes: ByteArray, mimeType: String = "audio/aac", audioUriString: String? = null) {
+    private fun transcribeAudioBytes(
+        bytes: ByteArray,
+        mimeType: String = "audio/aac",
+        audioUriString: String? = null,
+        customTimestamp: Long? = null
+    ) {
         _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Encoding audio for Gemini...", progress = 0.5f)
         viewModelScope.launch {
             try {
@@ -314,6 +415,7 @@ class MainViewModel : ViewModel() {
                 } catch (e: Exception) {}
                 val transcriptionId = UUID.randomUUID().toString()
                 var lastSaveTime = System.currentTimeMillis()
+                val recordTimestamp = customTimestamp ?: System.currentTimeMillis()
                 
                 withContext(Dispatchers.IO) {
                     response.byteStream().bufferedReader().use { reader ->
@@ -343,7 +445,9 @@ class MainViewModel : ViewModel() {
                                                     id = transcriptionId,
                                                     userId = userId,
                                                     text = accumulatedText,
-                                                    audioUri = audioUriString
+                                                    audioUri = audioUriString,
+                                                    timestamp = recordTimestamp,
+                                                    modelName = "Gemini 3.5 Flash"
                                                 )
                                                 repository?.insert(record)
                                             }
@@ -393,7 +497,9 @@ class MainViewModel : ViewModel() {
                     userId = userId,
                     text = resultText,
                     audioUri = audioUriString,
-                    summary = summaryResultText
+                    summary = summaryResultText,
+                    timestamp = recordTimestamp,
+                    modelName = "Gemini 3.5 Flash"
                 )
                 repository?.insert(finalRecord)
                 
@@ -492,7 +598,7 @@ class MainViewModel : ViewModel() {
             // Firebase not initialized
         }
         val userId = user?.uid ?: "local_user"
-        val record = TranscriptionRecord(userId = userId, text = text, audioUri = audioUriString, summary = summary)
+        val record = TranscriptionRecord(userId = userId, text = text, audioUri = audioUriString, summary = summary, modelName = "Gemini 3.5 Flash")
         
         viewModelScope.launch {
             repository?.insert(record)
@@ -582,7 +688,6 @@ data class UiState(
     val isAuthenticated: Boolean = false,
     val isAnonymous: Boolean = true,
     val userEmail: String? = null,
-    val isRecording: Boolean = false,
     val isLoading: Boolean = false,
     val statusMessage: String? = null,
     val progress: Float? = null,

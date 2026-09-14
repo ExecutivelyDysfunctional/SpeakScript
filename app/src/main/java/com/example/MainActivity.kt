@@ -1,6 +1,5 @@
 package com.example
 
-import android.Manifest
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -13,8 +12,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -24,9 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.MainViewModel
 import com.example.ui.theme.MyApplicationTheme
-import com.google.accompanist.permissions.ExperimentalPermissionsApi
-import com.google.accompanist.permissions.isGranted
-import com.google.accompanist.permissions.rememberPermissionState
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.CustomCredential
@@ -136,7 +131,7 @@ fun ProcessingWaveformVisualizer(
 
 @Composable
 fun TranscriptView(transcript: String, keywords: List<String>) {
-    val speakerRegex = Regex("(?m)^\\s*(?:\\*\\*)?([A-Za-z0-9 _\\-]{2,30})(?:\\*\\*)?:")
+    val speakerRegex = Regex("(?m)^\\s*(\\[\\d{2}:\\d{2}\\]\\s*)?(?:\\*\\*)?([A-Za-z0-9 _\\-]{2,30})(?:\\*\\*)?:")
     val matches = speakerRegex.findAll(transcript).toList()
     
     if (matches.isEmpty()) {
@@ -160,7 +155,8 @@ fun TranscriptView(transcript: String, keywords: List<String>) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         for (i in matches.indices) {
             val match = matches[i]
-            val speaker = match.groupValues[1].trim()
+            val timestamp = match.groupValues[1].trim()
+            val speaker = match.groupValues[2].trim()
             val start = match.range.last + 1
             val end = if (i + 1 < matches.size) matches[i + 1].range.first else transcript.length
             val content = transcript.substring(start, end).trim()
@@ -169,13 +165,15 @@ fun TranscriptView(transcript: String, keywords: List<String>) {
                 colors[colorIndex++ % colors.size]
             }
             
+            val displayText = if (timestamp.isNotEmpty()) "$timestamp $speaker" else speaker
+            
             Column {
                 Surface(
                     color = color.copy(alpha = 0.1f),
                     shape = MaterialTheme.shapes.small
                 ) {
                     Text(
-                        text = speaker,
+                        text = displayText,
                         color = color,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
@@ -243,7 +241,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
@@ -264,10 +262,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         )
         return
     }
-    
-    val recordPermissionState = rememberPermissionState(
-        Manifest.permission.RECORD_AUDIO
-    )
 
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -290,7 +284,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     }
 
     LaunchedEffect(Unit) {
-        viewModel.initAudioRecorder(context)
         viewModel.initDatabase(context)
         viewModel.initApiKey(context)
     }
@@ -302,10 +295,12 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         }
     }
 
+    var currentTab by remember { mutableStateOf(0) }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Transcribe AI") },
+                title = { Text(if (currentTab == 0) "Transcribe Audio" else "Journal History") },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
@@ -315,363 +310,211 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     }
                 }
             )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    icon = { Icon(Icons.Default.AudioFile, contentDescription = "Transcribe") },
+                    label = { Text("Transcribe") },
+                    selected = currentTab == 0,
+                    onClick = { currentTab = 0 }
+                )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Default.History, contentDescription = "Journal") },
+                    label = { Text("Journal History") },
+                    selected = currentTab == 1,
+                    onClick = { currentTab = 1 }
+                )
+            }
         }
     ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(16.dp)
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-                val activeKey = viewModel.getActiveApiKey()
-                if (activeKey.isBlank()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "API Key Missing",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                fontWeight = FontWeight.Bold
+        val defaultKeywords = remember {
+            listOf(
+                "ai", "api", "architecture", "android", "kotlin", "compose", "gemini",
+                "meeting", "action item", "deadline", "roadmap", "revenue", "q1", "q2", "q3", "q4",
+                "backend", "frontend", "database", "server", "cloud"
+            )
+        }
+
+        if (currentTab == 1) {
+            Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+                TranscriptionHistoryScreen(
+                    uiState = uiState,
+                    onUpdateCategory = { record, category -> viewModel.updateCategory(record, category) },
+                    onUpdateSpeakerName = { record, name -> viewModel.updateSpeakerName(record, name) },
+                    onDeleteTranscriptions = { ids -> viewModel.deleteTranscriptions(ids) },
+                    onExportJson = { record ->
+                        recordToExport = record
+                        exportLauncher.launch("transcription_${record.timestamp}.json")
+                    },
+                    onSync = { viewModel.syncTranscriptions() },
+                    defaultKeywords = defaultKeywords,
+                    audioPlayerContent = { uri -> AudioPlayerComponent(uri) }
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .padding(padding)
+                    .padding(16.dp)
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                    val activeKey = viewModel.getActiveApiKey()
+                    if (activeKey.isBlank()) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.errorContainer
                             )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "No Gemini API key found. Please configure your API key in Settings to use transcription and AI features.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { showSettings = true },
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error,
-                                    contentColor = MaterialTheme.colorScheme.onError
+                        ) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text(
+                                    text = "API Key Missing",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer,
+                                    fontWeight = FontWeight.Bold
                                 )
-                            ) {
-                                Text("Open Settings")
-                            }
-                        }
-                    }
-                }
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    ExtendedFloatingActionButton(
-                        onClick = {
-                            if (!recordPermissionState.status.isGranted) {
-                                recordPermissionState.launchPermissionRequest()
-                            } else {
-                                if (uiState.isRecording) {
-                                    viewModel.stopRecording()
-                                } else {
-                                    viewModel.startRecording()
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "No Gemini API key found. Please configure your API key in Settings to use transcription and AI features.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onErrorContainer
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = { showSettings = true },
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.error,
+                                        contentColor = MaterialTheme.colorScheme.onError
+                                    )
+                                ) {
+                                    Text("Open Settings")
                                 }
                             }
-                        },
-                        containerColor = if (uiState.isRecording) MaterialTheme.colorScheme.errorContainer else FloatingActionButtonDefaults.containerColor,
-                        contentColor = if (uiState.isRecording) MaterialTheme.colorScheme.onErrorContainer else contentColorFor(FloatingActionButtonDefaults.containerColor),
-                        icon = {
-                            Icon(
-                                imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                                contentDescription = if (uiState.isRecording) "Stop Recording" else "Start Recording"
-                            )
-                        },
-                        text = {
-                            Text(if (uiState.isRecording) "Stop Recording" else "Record Audio")
                         }
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            audioPickerLauncher.launch("audio/*")
-                        },
-                        enabled = !uiState.isLoading && !uiState.isRecording
-                    ) {
-                        Text("Pick AAC Audio")
                     }
-                }
-
-                if (uiState.isLoading) {
+                    
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                         ),
-                        shape = MaterialTheme.shapes.medium
+                        shape = MaterialTheme.shapes.large
                     ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(16.dp),
+                                .padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(56.dp)
                             ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(16.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                Text(
-                                    text = uiState.statusMessage ?: "Processing audio...",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                            
-                            ProcessingWaveformVisualizer(
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            
-                            val progressValue = uiState.progress
-                            if (progressValue != null) {
-                                LinearProgressIndicator(
-                                    progress = { progressValue },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            } else {
-                                LinearProgressIndicator(
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                    }
-                }
-
-                val defaultKeywords = remember {
-                    listOf(
-                        "ai", "api", "architecture", "android", "kotlin", "compose", "gemini",
-                        "meeting", "action item", "deadline", "roadmap", "revenue", "q1", "q2", "q3", "q4",
-                        "backend", "frontend", "database", "server", "cloud"
-                    )
-                }
-
-                uiState.lastTranscription?.let { text ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Latest Transcription:", style = MaterialTheme.typography.titleMedium)
-                            uiState.lastSummary?.let { summaryText ->
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Surface(
-                                    color = MaterialTheme.colorScheme.secondaryContainer,
-                                    shape = MaterialTheme.shapes.medium,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(12.dp)) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Icon(
-                                                imageVector = Icons.Default.AutoAwesome,
-                                                contentDescription = "Highlights",
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                "Highlights", 
-                                                style = MaterialTheme.typography.titleSmall, 
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            summaryText, 
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            color = MaterialTheme.colorScheme.onSecondaryContainer
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(16.dp))
-                            }
-                            
-                            Text(highlightKeywords(text, defaultKeywords))
-                        }
-                    }
-                }
-
-                HorizontalDivider()
-
-                var question by remember { mutableStateOf("") }
-                OutlinedTextField(
-                    value = question,
-                    onValueChange = { question = it },
-                    label = { Text("Ask a complex query (High Thinking)") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Button(
-                    onClick = { viewModel.askComplexQuestion(question) },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = question.isNotBlank() && !uiState.isLoading
-                ) {
-                    Text("Ask Gemini")
-                }
-
-                uiState.lastAnswer?.let { ans ->
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Text("Answer:", style = MaterialTheme.typography.titleMedium)
-                            Text(ans)
-                        }
-                    }
-                }
-                
-                var historySearchQuery by remember { mutableStateOf("") }
-                var isSelectionMode by remember { mutableStateOf(false) }
-                var selectedIds by remember { mutableStateOf(setOf<String>()) }
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text("History", style = MaterialTheme.typography.titleLarge)
-                    if (isSelectionMode) {
-                        Row {
-                            TextButton(onClick = {
-                                isSelectionMode = false
-                                selectedIds = emptySet()
-                            }) {
-                                Text("Cancel")
-                            }
-                            TextButton(onClick = {
-                                viewModel.deleteTranscriptions(selectedIds.toList())
-                                isSelectionMode = false
-                                selectedIds = emptySet()
-                            }, enabled = selectedIds.isNotEmpty()) {
-                                Text("Delete (${selectedIds.size})", color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(onClick = { viewModel.syncTranscriptions() }) {
-                                Icon(Icons.Default.Sync, contentDescription = "Sync with Cloud")
-                            }
-                            if (uiState.history.isNotEmpty()) {
-                                TextButton(onClick = { isSelectionMode = true }) {
-                                    Text("Select")
-                                }
-                            }
-                        }
-                    }
-                }
-                
-                OutlinedTextField(
-                    value = historySearchQuery,
-                    onValueChange = { historySearchQuery = it },
-                    label = { Text("Search by date or speaker/keyword...") },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                val dateFormat = remember { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()) }
-                val filteredHistory = uiState.history.filter { record ->
-                    val dateString = dateFormat.format(java.util.Date(record.timestamp))
-                    val query = historySearchQuery.lowercase()
-                    dateString.lowercase().contains(query) || 
-                    record.text.lowercase().contains(query) || 
-                    (record.summary?.lowercase()?.contains(query) == true) ||
-                    (record.category?.lowercase()?.contains(query) == true) ||
-                    (record.speakerName?.lowercase()?.contains(query) == true)
-                }
-
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    filteredHistory.forEach { record ->
-                        val isSelected = selectedIds.contains(record.id)
-                        Card(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .then(
-                                    if (isSelectionMode) {
-                                        Modifier.clickable {
-                                            if (isSelected) {
-                                                selectedIds = selectedIds - record.id
-                                            } else {
-                                                selectedIds = selectedIds + record.id
-                                            }
-                                        }
-                                    } else Modifier
-                                ),
-                            colors = if (isSelected) CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-                            ) else CardDefaults.cardColors()
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                if (isSelectionMode) {
-                                    Checkbox(
-                                        checked = isSelected,
-                                        onCheckedChange = { checked ->
-                                            if (checked) {
-                                                selectedIds = selectedIds + record.id
-                                            } else {
-                                                selectedIds = selectedIds - record.id
-                                            }
-                                        },
-                                        modifier = Modifier.padding(start = 16.dp)
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.AudioFile,
+                                        contentDescription = "Audio File",
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(28.dp)
                                     )
                                 }
-                                Column(modifier = Modifier.padding(16.dp).weight(1f)) {
-                                    var editSpeakerMode by remember { mutableStateOf(false) }
-                                var tempSpeakerName by remember { mutableStateOf(record.speakerName ?: "") }
+                            }
+                            Text(
+                                text = "Transcribe Audio File",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Select an audio file (AAC, M4A, MP3, WAV, etc.) to transcribe speech into text using AI.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Button(
+                                onClick = {
+                                    audioPickerLauncher.launch("audio/*")
+                                },
+                                enabled = !uiState.isLoading,
+                                modifier = Modifier.fillMaxWidth(),
+                                contentPadding = PaddingValues(vertical = 14.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.UploadFile,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Choose Audio File")
+                            }
+                        }
+                    }
 
+                    if (uiState.isLoading) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            ),
+                            shape = MaterialTheme.shapes.medium
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    modifier = Modifier.fillMaxWidth()
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (editSpeakerMode) {
-                                        OutlinedTextField(
-                                            value = tempSpeakerName,
-                                            onValueChange = { tempSpeakerName = it },
-                                            modifier = Modifier.weight(1f),
-                                            label = { Text("Speaker") },
-                                            singleLine = true,
-                                            trailingIcon = {
-                                                IconButton(onClick = {
-                                                    viewModel.updateSpeakerName(record, tempSpeakerName)
-                                                    editSpeakerMode = false
-                                                }) {
-                                                    Icon(Icons.Default.Check, "Save")
-                                                }
-                                            }
-                                        )
-                                    } else {
-                                        Column {
-                                            Text(
-                                                text = dateFormat.format(java.util.Date(record.timestamp)),
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                            if (!record.speakerName.isNullOrBlank()) {
-                                                Text(
-                                                    text = "Speaker: ${record.speakerName}",
-                                                    style = MaterialTheme.typography.labelMedium,
-                                                    color = MaterialTheme.colorScheme.primary
-                                                )
-                                            }
-                                        }
-                                        TextButton(onClick = { editSpeakerMode = true }) {
-                                            Text(if (record.speakerName.isNullOrBlank()) "Add Speaker" else "Edit")
-                                        }
-                                    }
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        strokeWidth = 2.dp,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Text(
+                                        text = uiState.statusMessage ?: "Processing audio...",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
                                 }
                                 
-                                Spacer(modifier = Modifier.height(4.dp))
+                                ProcessingWaveformVisualizer(
+                                    modifier = Modifier.fillMaxWidth()
+                                )
                                 
-                                record.summary?.let { summaryText ->
+                                val progressValue = uiState.progress
+                                if (progressValue != null) {
+                                    LinearProgressIndicator(
+                                        progress = { progressValue },
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                } else {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    uiState.lastTranscription?.let { text ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Latest Transcription:", style = MaterialTheme.typography.titleMedium)
+                                uiState.lastSummary?.let { summaryText ->
+                                    Spacer(modifier = Modifier.height(8.dp))
                                     Surface(
                                         color = MaterialTheme.colorScheme.secondaryContainer,
-                                        shape = MaterialTheme.shapes.small,
+                                        shape = MaterialTheme.shapes.medium,
                                         modifier = Modifier.fillMaxWidth()
                                     ) {
                                         Column(modifier = Modifier.padding(12.dp)) {
@@ -680,66 +523,57 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                                     imageVector = Icons.Default.AutoAwesome,
                                                     contentDescription = "Highlights",
                                                     tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                    modifier = Modifier.size(16.dp)
+                                                    modifier = Modifier.size(18.dp)
                                                 )
-                                                Spacer(modifier = Modifier.width(6.dp))
+                                                Spacer(modifier = Modifier.width(8.dp))
                                                 Text(
                                                     "Highlights", 
-                                                    style = MaterialTheme.typography.labelMedium, 
+                                                    style = MaterialTheme.typography.titleSmall, 
                                                     color = MaterialTheme.colorScheme.onSecondaryContainer
                                                 )
                                             }
-                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Spacer(modifier = Modifier.height(6.dp))
                                             Text(
                                                 summaryText, 
-                                                style = MaterialTheme.typography.bodySmall,
+                                                style = MaterialTheme.typography.bodyMedium,
                                                 color = MaterialTheme.colorScheme.onSecondaryContainer
                                             )
                                         }
                                     }
-                                    Spacer(modifier = Modifier.height(12.dp))
-                                }
-
-                                TranscriptView(record.text, defaultKeywords)
-                                
-                                record.audioUri?.let { uriString ->
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    AudioPlayerComponent(uriString)
+                                    Spacer(modifier = Modifier.height(16.dp))
                                 }
                                 
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    val categories = listOf("Work", "Personal", "Meeting")
-                                    categories.forEach { cat ->
-                                        FilterChip(
-                                            selected = record.category == cat,
-                                            onClick = { 
-                                                val newCategory = if (record.category == cat) null else cat
-                                                viewModel.updateCategory(record, newCategory ?: "")
-                                            },
-                                            label = { Text(cat) }
-                                        )
-                                    }
-                                }
-                                
-                                Spacer(modifier = Modifier.height(8.dp))
-                                OutlinedButton(
-                                    onClick = {
-                                        recordToExport = record
-                                        exportLauncher.launch("transcription_${record.timestamp}.json")
-                                    },
-                                    modifier = Modifier.align(Alignment.End)
-                                ) {
-                                    Text("Export JSON")
-                                }
-                            }
+                                TranscriptView(text, defaultKeywords)
                             }
                         }
                     }
-                }
+
+                    HorizontalDivider()
+
+                    var question by remember { mutableStateOf("") }
+                    OutlinedTextField(
+                        value = question,
+                        onValueChange = { question = it },
+                        label = { Text("Ask a complex query (High Thinking)") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Button(
+                        onClick = { viewModel.askComplexQuestion(question) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = question.isNotBlank() && !uiState.isLoading
+                    ) {
+                        Text("Ask Gemini")
+                    }
+
+                    uiState.lastAnswer?.let { ans ->
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Text("Answer:", style = MaterialTheme.typography.titleMedium)
+                                Text(ans)
+                            }
+                        }
+                    }
+            }
         }
     }
 }

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Warning
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
 import androidx.credentials.CustomCredential
@@ -23,6 +24,7 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import com.example.R
+import androidx.compose.ui.text.font.FontWeight
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,6 +39,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    var showNoCredentialsDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -440,13 +443,65 @@ fun SettingsScreen(
                                 }
                             } catch (e: Exception) {
                                 e.printStackTrace()
-                                android.widget.Toast.makeText(context, "Google Sign-In Error: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
+                                val errorMsg = e.localizedMessage ?: e.message ?: ""
+                                if (errorMsg.contains("No credentials available", ignoreCase = true) || 
+                                    e.javaClass.simpleName.contains("NoCredentialException", ignoreCase = true)) {
+                                    showNoCredentialsDialog = true
+                                } else {
+                                    android.widget.Toast.makeText(context, "Google Sign-In Error: $errorMsg", android.widget.Toast.LENGTH_LONG).show()
+                                }
                             }
                         }
                     },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Sign In with Google")
+                }
+
+                if (showNoCredentialsDialog) {
+                    AlertDialog(
+                        onDismissRequest = { showNoCredentialsDialog = false },
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Warning",
+                                    tint = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Google Sign-In Setup")
+                            }
+                        },
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(
+                                    text = "Google Sign-In returned 'No credentials available'.",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = "This happens when there is no Google Account signed into this Android device or emulator.",
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = "To resolve this:\n" +
+                                            "1. Go to your device's Android Settings.\n" +
+                                            "2. Select 'Passwords & accounts' (or 'Google').\n" +
+                                            "3. Tap 'Add account' and sign in with your Google account.\n" +
+                                            "4. Return to the app and try signing in again.\n\n" +
+                                            "Note: You can still use all transcription features locally without signing in!",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            TextButton(onClick = { showNoCredentialsDialog = false }) {
+                                Text("Dismiss")
+                            }
+                        }
+                    )
                 }
             } else {
                 Text("Signed in as ${uiState.userEmail}", style = MaterialTheme.typography.bodyMedium)
