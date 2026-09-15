@@ -1,51 +1,59 @@
-name: Build APK
+name: Build Android APK
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
 
 jobs:
   build:
+    name: Build APK
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Java 17
+      - name: Check Push Build Condition
+        if: github.event_name == 'push'
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=%B)
+          echo "Latest commit message: $COMMIT_MSG"
+          if [[ "$COMMIT_MSG" != *"[build]"* && "$COMMIT_MSG" != *"[build-apk]"* ]]; then
+            echo "::notice::Skipping build because commit message does not contain [build] or [build-apk]."
+            echo "BUILD_REQUIRED=false" >> $GITHUB_ENV
+          else
+            echo "BUILD_REQUIRED=true" >> $GITHUB_ENV
+          fi
+
+      - name: Set Build Flag for Workflow Dispatch
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "BUILD_REQUIRED=true" >> $GITHUB_ENV
+
+      - name: Set up JDK 17
+        if: env.BUILD_REQUIRED == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Gradle
+      - name: Setup Gradle
+        if: env.BUILD_REQUIRED == 'true'
         uses: gradle/actions/setup-gradle@v3
 
       - name: Generate Gradle Wrapper
+        if: env.BUILD_REQUIRED == 'true'
         run: gradle wrapper
 
-      - name: Grant Execute Permission
-        run: chmod +x gradlew
-
-      - name: Create Debug Keystore
-        run: |
-          keytool -genkeypair -v \
-            -keystore debug.keystore \
-            -storepass android \
-            -alias androiddebugkey \
-            -keypass android \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -dname "CN=Android Debug,O=Android,C=US"
-
       - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        if: env.BUILD_REQUIRED == 'true'
+        run: ./gradlew assembleDebug
 
-      - name: Upload APK Artifact
+      - name: Upload APK
+        if: env.BUILD_REQUIRED == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: '**/build/outputs/apk/debug/*.apk'
+          path: app/build/outputs/apk/debug/app-debug.apk
+

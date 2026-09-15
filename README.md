@@ -1,133 +1,65 @@
 # Transcribe AI
 
-**Transcribe AI** is an intelligent Android voice recording and speech analysis application built with **Jetpack Compose**, **Kotlin Coroutines**, **Room Local Database**, and **Gemini 3.5 Flash**. It provides real-time streaming audio transcription, automatic speaker diarization, AI-generated highlights, deep contextual Q&A using Gemini High Thinking mode, and a responsive custom audio waveform player.
+**Transcribe AI** is an intelligent voice recording and speech analysis application powered by **Gemini**. It provides real-time streaming audio transcription, automatic speaker recognition, AI-generated highlights, contextual Q&A, and an interactive waveform audio player.
 
 ---
 
-## 📱 Features Overview
+# 📖 User Guide
 
-### 1. High-Fidelity Audio Recording & Audio File Picker
-- **One-Tap Live Recording**: Record microphone audio in compressed AAC format with runtime permission handling.
-- **Audio File Import**: Select any local `.aac` / `.m4a` / audio file from device storage to transcribe pre-recorded meetings, interviews, or lectures.
-- **Processing Waveform Visualizer**: Features a dynamic animated multi-bar harmonic waveform visualizer that undulates with dual-frequency wave motion while an audio file is being uploaded and processed by Gemini.
+### What Transcribe AI Does for You
+- **Record or Import Audio**: Capture live microphone notes or import existing audio files (`.aac`, `.m4a`) from your device.
+- **Real-Time Transcription**: Watch transcriptions stream in live with automatic speaker identification (`Speaker 1`, `Speaker 2`) and keyword highlighting.
+- **Smart Summaries & Highlights**: Automatically get executive summaries and key takeaways for every conversation.
+- **Interactive Audio Player**: Review recordings using a visual waveform player with variable playback speeds (`0.5x`, `1.0x`, `1.5x`, `2.0x`) and skip controls.
+- **Ask Gemini Q&A**: Ask complex questions about your transcripts and get deep reasoning answers instantly.
+- **Organize & Search**: Tag conversations by category (**Work**, **Personal**, **Meeting**), rename speakers, search across text or dates, batch delete, and export records as JSON.
+- **Appearance Settings**: Easily switch between Light, Dark, or System themes.
 
-### 2. Gemini Real-Time Streaming Transcription & Speaker Diarization
-- **Live Streaming Output**: Displays streaming transcript text dynamically in real time via Server-Sent Events (SSE) from the Gemini API.
-- **Multi-Speaker Recognition**: Automatically detects speech patterns and labels speakers (e.g., `Speaker 1:`, `Speaker 2:`) with distinct color-coded badges and highlight chips.
-- **Domain Keyword Highlighting**: Visually highlights high-value keywords (e.g., *deadline*, *action item*, *meeting*, *cloud*, *API*, *architecture*, *roadmap*) directly in the transcript text for rapid scanning.
-
-### 3. Automated AI Highlights & Summaries
-- **Executive Summaries**: After transcription completes, Gemini automatically synthesizes the discussion into structured highlights and actionable takeaways.
-- **Dedicated Highlights Card**: Highlight callouts appear with an accent badge above each transcription in the details card and history feed.
-
-### 4. Interactive Waveform Audio Player
-- **Visual Waveform**: Renders audio amplitude bars across a custom Compose Canvas with real-time playback progress tracking.
-- **Seek & Skip**: 10-second fast-forward and 10-second rewind controls.
-- **Variable Playback Speeds**: Toggle between `0.5x`, `1.0x`, `1.5x`, and `2.0x` speeds for efficient review.
-- **Audio Lifecycle Management**: Gracefully initializes and releases `MediaPlayer` instances when scrolling or switching screens.
-
-### 5. Contextual Follow-Up Q&A (Gemini High Thinking)
-- **"Ask Gemini" Query Engine**: Ask complex questions about the latest transcript (e.g., *"What were the key decisions made?"*, *"Who was assigned to the API task?"*).
-- **High Thinking Mode**: Utilizes an extended thinking budget for deep reasoning, synthesis, and nuanced extraction of meeting details.
-
-### 6. Offline-First Room Persistence & Cloud Synchronization
-- **Local Room Database**: All recordings, transcripts, summaries, speaker labels, and categories are saved locally on device using SQLite Room for instant offline access.
-- **Optional Firebase Cloud Sync**: Supports syncing transcripts across devices via Cloud Firestore.
-- **Google Sign-In**: Integrated with modern Android Credential Manager and Firebase Authentication (with automatic anonymous fallback for offline and guest use).
-
-### 7. Organization, Search & Batch Management
-- **Speaker Tagging & Renaming**: Easily edit or rename speaker tags (e.g., replace *"Speaker 1"* with *"Alex"*).
-- **Categories**: Tag items as **Work**, **Personal**, or **Meeting** with quick-toggle filter chips.
-- **Multi-Field Search**: Real-time search bar filtering across dates, speakers, categories, summary points, and transcript content.
-- **Batch Deletion**: Enter selection mode to check multiple recordings and delete them in bulk.
-- **JSON Export**: Export any transcription with full metadata (timestamps, speakers, categories, and summary) as a standard JSON file via Android Storage Access Framework (`CreateDocument`).
-
-### 8. Adaptive UI & Theme Switching
-- **Material 3 Design**: Clean typography, standard 8dp grid spacing, and accessible touch targets.
-- **Theme Modes**: Configure **Light**, **Dark**, or **System Default** themes with dedicated segmented buttons and a dark mode toggle located on the Settings screen.
+### How to Use the App
+1. **Record Audio**: Tap the **Record Audio** button to start recording. Tap **Stop Recording** when finished to begin transcription.
+2. **Import Audio**: Tap **Pick AAC Audio** to select an audio file from your device.
+3. **Playback**: Tap the **Play** button on any history card to listen to the recording with waveform progress tracking and speed controls.
+4. **Ask Questions**: Type your question in the query box under a transcript and tap **Ask Gemini** for deep insights.
+5. **Organize**: Tap speaker names to rename them, tap category pills to tag notes, or use the search bar to find past transcriptions instantly.
+6. **Settings**: Tap the gear icon in the top bar to manage your account sync and theme preferences.
 
 ---
 
-## 📁 Architecture & Project Structure
+# 🛠️ Developer Guide
 
+### Architecture & Project Structure
+The application follows modern Android architecture (MVVM, Kotlin Coroutines, Jetpack Compose, Room):
 ```
 app/src/main/java/com/example/
-├── MainActivity.kt               # Main entry point, UI composables, audio player & layout
+├── MainActivity.kt               # Main entry point and UI screens
 ├── api/
-│   └── GeminiApiService.kt       # Retrofit service definitions & Gemini streaming client
+│   └── GeminiApiService.kt       # Retrofit service & Gemini streaming client
 ├── audio/
-│   └── AudioRecorder.kt          # Android MediaRecorder wrapper producing AAC files
+│   └── AudioRecorder.kt          # Android MediaRecorder wrapper
 ├── db/
-│   ├── AppDatabase.kt            # Room database definition with schema migrations
-│   ├── TranscriptionDao.kt       # Room DAO (insert, query, bulk delete)
-│   └── TranscriptionRepository.kt# Repository layer exposing Flow streams
+│   ├── AppDatabase.kt            # Room database definition
+│   ├── TranscriptionDao.kt       # Room data access object
+│   └── TranscriptionRepository.kt# Repository managing local/cloud data flows
 └── ui/
-    ├── MainViewModel.kt          # ViewModel managing audio recording, Gemini calls, and state
-    ├── SettingsScreen.kt         # Account authentication and settings management
+    ├── MainViewModel.kt          # ViewModel managing app state & API calls
+    ├── SettingsScreen.kt         # Settings & authentication UI
     └── theme/
         ├── Color.kt              # M3 color palettes
-        ├── Theme.kt              # Theme definitions (Light/Dark/System)
+        ├── Theme.kt              # Theme definitions
         └── Type.kt               # Typography configurations
 ```
 
----
+### Tech Stack & Dependencies
+- **Language**: Kotlin 100%
+- **UI Framework**: Jetpack Compose (Material Design 3)
+- **Local Persistence**: Room SQLite Database
+- **Networking**: Retrofit, Kotlinx Serialization
+- **AI Integration**: Gemini API (Streaming SSE & High Thinking mode)
 
-## 🚀 How to Use the Features
+### Configuration & Build Requirements
+- **Minimum SDK**: Android 24+
+- **Target SDK**: Android 34
+- **API Key**: Configured securely via `BuildConfig.GEMINI_API_KEY` (managed through AI Studio Secrets).
 
-### Recording & Transcribing Audio
-1. Tap the **Record Audio** floating action button. If prompted, grant microphone access.
-2. Speak clearly into the microphone. Tap **Stop Recording** when finished.
-3. Transcribe AI will automatically stream the audio to Gemini, displaying real-time transcription chunks with speaker labels and generating meeting highlights upon completion.
-
-### Transcribing an Existing Audio File
-1. Tap **Pick AAC Audio** next to the record button.
-2. Select any compatible audio file (`.aac`, `.m4a`, etc.) from your device's file manager.
-3. The app will process, upload, transcribe, and persist the recording automatically.
-
-### Asking Questions About a Transcription
-1. In the **Ask a complex query (High Thinking)** text field, enter any question regarding the transcription (e.g., *"Summarize next steps in 3 bullet points"*).
-2. Tap **Ask Gemini**.
-3. View the synthesized answer generated with Gemini's reasoning engine.
-
-### Playing Back Audio with the Waveform Player
-1. In the **History** list, find the recording card.
-2. Tap the circular **Play** button to begin audio playback.
-3. Tap **Fast Forward (10s)** or **Rewind (10s)** to skip through the audio.
-4. Tap the **Speed button** (e.g., `1.0x`) to cycle playback speeds: `1.0x` ➔ `1.5x` ➔ `2.0x` ➔ `0.5x`.
-
-### Renaming Speakers & Adding Categories
-1. **Edit Speaker**: On any history card, tap **Add Speaker** or **Edit** next to the speaker line, enter the person's name, and tap the checkmark icon.
-2. **Assign Category**: Tap any category pill (**Work**, **Personal**, or **Meeting**) to tag or untag the entry.
-
-### Searching & Filtering Transcriptions
-- Type into the **Search by date or speaker/keyword...** bar to instantly filter the list by speaker name, date (e.g., *"Sep 12"*), category, or spoken phrases.
-
-### Batch Deleting Transcriptions
-1. In the **History** header, tap **Select**.
-2. Check the boxes next to the items you want to remove.
-3. Tap **Delete (N)** to permanently remove the selected entries from local and cloud storage. Tap **Cancel** to exit selection mode.
-
-### Exporting to JSON
-1. Tap **Export JSON** at the bottom of any history card.
-2. Choose a destination folder and file name in the Android system file picker.
-3. The exported file contains the full record schema including raw text, highlights, timestamps, and speaker metadata.
-
-### Account & Sync Settings
-1. Tap the **Settings (gear)** icon in the top app bar.
-2. View your current sign-in status. Tap **Sign In with Google** to connect your account and enable cross-device cloud sync.
-3. Tap the back button to return to the main transcription dashboard.
-
-### Changing Themes
-1. Tap the **Settings (gear)** icon in the top app bar.
-2. In the **Appearance** section, select between **System**, **Light**, or **Dark** mode using the segmented buttons, or toggle the **Dark Theme** switch directly.
-
----
-
-## ⚙️ Configuration & Requirements
-
-- **Minimum SDK**: Android 24+ (Android 7.0 Nougat)
-- **Target SDK**: Android 34 (Android 14)
-- **Gemini API Key**: Configured securely via `BuildConfig.GEMINI_API_KEY` (injected via `.env`).
-- **Permissions**:
-  - `android.permission.RECORD_AUDIO`: Required for live microphone recording.
-  - `android.permission.INTERNET`: Required for Gemini API transcription and cloud sync.
+### CI/CD & GitHub Actions
+Automated APK builds are configured via `.github/workflows/build-apk.yml`. Builds run on manual dispatch (`workflow_dispatch`) or when a push includes the `[build]` or `[build-apk]` tag in the commit message.
