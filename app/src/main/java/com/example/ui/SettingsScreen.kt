@@ -36,6 +36,8 @@ import androidx.compose.material.icons.filled.RecordVoiceOver
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.Build
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
@@ -80,6 +82,9 @@ fun SettingsScreen(
     onOpenSpeakers: (() -> Unit)? = null,
     onSaveLocation: (com.example.db.LocationProfile) -> Unit = {},
     onDeleteLocation: (com.example.db.LocationProfile) -> Unit = {},
+    onUpdateBiometricCalibration: (sensitivity: String, sliceSec: Int, maxSpeakers: Int, mode: String) -> Unit = { _, _, _, _ -> },
+    onRunBiometricCalibrationBenchmark: () -> Unit = {},
+    onClearBiometricCalibrationReport: () -> Unit = {},
     onNavigateBack: () -> Unit
 ) {
     val context = LocalContext.current
@@ -1187,6 +1192,200 @@ fun SettingsScreen(
                             Icon(Icons.Default.RecordVoiceOver, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(8.dp))
                             Text("Manage Speakers & Golden Samples")
+                        }
+                    }
+                }
+            }
+
+            // Biometric Calibration & Fine-Tuning Card
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Tune,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Acoustic Matching & Fine-Tuning",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+
+                    Text(
+                        text = "Fine-tune voice profile matching sensitivity thresholds, reference slice extraction durations, and acoustic spectrum analysis profiles.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    // 1. Acoustic Sensitivity Selector
+                    Text(
+                        text = "Acoustic Matching Sensitivity",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val sensitivityOptions = listOf("Strict", "Balanced", "High Recall")
+                        sensitivityOptions.forEach { opt ->
+                            FilterChip(
+                                selected = uiState.biometricSensitivity == opt,
+                                onClick = {
+                                    onUpdateBiometricCalibration(
+                                        opt,
+                                        uiState.biometricSliceDurationSec,
+                                        uiState.biometricMaxSpeakers,
+                                        uiState.biometricAcousticMode
+                                    )
+                                },
+                                label = { Text(opt, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // 2. Reference Audio Slice Duration
+                    Text(
+                        text = "Reference Audio Slice Length",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val durationOptions = listOf(5 to "5s (Fast)", 10 to "10s (Std)", 15 to "15s (Precise)")
+                        durationOptions.forEach { (sec, label) ->
+                            FilterChip(
+                                selected = uiState.biometricSliceDurationSec == sec,
+                                onClick = {
+                                    onUpdateBiometricCalibration(
+                                        uiState.biometricSensitivity,
+                                        sec,
+                                        uiState.biometricMaxSpeakers,
+                                        uiState.biometricAcousticMode
+                                    )
+                                },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // 3. Max Bundled Reference Speakers
+                    Text(
+                        text = "Max Bundled Speaker Profiles",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val maxOptions = listOf(3 to "3 Speakers", 5 to "5 (Default)", 10 to "10 Max")
+                        maxOptions.forEach { (cap, label) ->
+                            FilterChip(
+                                selected = uiState.biometricMaxSpeakers == cap,
+                                onClick = {
+                                    onUpdateBiometricCalibration(
+                                        uiState.biometricSensitivity,
+                                        uiState.biometricSliceDurationSec,
+                                        cap,
+                                        uiState.biometricAcousticMode
+                                    )
+                                },
+                                label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // 4. Acoustic Spectrum Mode
+                    Text(
+                        text = "Acoustic Analysis Spectrum",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        val modeOptions = listOf("Standard", "Enhanced Harmonic", "Noise Suppressed")
+                        modeOptions.forEach { mode ->
+                            FilterChip(
+                                selected = uiState.biometricAcousticMode == mode,
+                                onClick = {
+                                    onUpdateBiometricCalibration(
+                                        uiState.biometricSensitivity,
+                                        uiState.biometricSliceDurationSec,
+                                        uiState.biometricMaxSpeakers,
+                                        mode
+                                    )
+                                },
+                                label = { Text(if (mode == "Enhanced Harmonic") "Harmonics" else if (mode == "Noise Suppressed") "Noise Filter" else "Standard", style = MaterialTheme.typography.labelSmall) },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // Calibration Benchmark Button
+                    OutlinedButton(
+                        onClick = onRunBiometricCalibrationBenchmark,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 48.dp)
+                    ) {
+                        Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Run Calibration Benchmark")
+                    }
+
+                    // Calibration Report Card
+                    if (uiState.biometricCalibrationReport != null) {
+                        Surface(
+                            color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(14.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Biometric Calibration Report",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    IconButton(
+                                        onClick = onClearBiometricCalibrationReport,
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(Icons.Default.Delete, contentDescription = "Clear Report", tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = uiState.biometricCalibrationReport,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
                         }
                     }
                 }

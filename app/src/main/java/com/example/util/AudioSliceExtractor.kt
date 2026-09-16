@@ -36,7 +36,8 @@ object AudioSliceExtractor {
         context: Context,
         audioUriStr: String,
         startMs: Int?,
-        endMs: Int?
+        endMs: Int?,
+        maxSliceDurationMs: Int? = null
     ): AudioSlice? {
         if (audioUriStr.isBlank()) return null
         var extractor: MediaExtractor? = null
@@ -46,10 +47,11 @@ object AudioSliceExtractor {
         try {
             val uri = Uri.parse(audioUriStr)
             val sMs = (startMs ?: 0).coerceAtLeast(0)
-            val targetDuration = 12000 // 12 seconds optimal slice
+            val maxCap = (maxSliceDurationMs ?: 15000).coerceIn(3000, 30000)
+            val targetDuration = maxCap.coerceAtMost(12000)
             val rawEMs = if (endMs != null && endMs > sMs) endMs else (sMs + targetDuration)
-            // Clamp slice between 3 seconds and 15 seconds
-            val eMs = if (rawEMs - sMs > 15000) sMs + 15000 else if (rawEMs - sMs < 3000) sMs + 3000 else rawEMs
+            // Clamp slice between 3 seconds and maxCap
+            val eMs = if (rawEMs - sMs > maxCap) sMs + maxCap else if (rawEMs - sMs < 3000) sMs + 3000 else rawEMs
             val sliceDurationMs = eMs - sMs
 
             extractor = MediaExtractor()

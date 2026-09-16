@@ -483,6 +483,15 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             },
             onSaveLocation = { viewModel.saveLocation(it) },
             onDeleteLocation = { viewModel.deleteLocation(it) },
+            onUpdateBiometricCalibration = { sens, sec, maxSpk, mode ->
+                viewModel.updateBiometricCalibration(context, sens, sec, maxSpk, mode)
+            },
+            onRunBiometricCalibrationBenchmark = {
+                viewModel.runBiometricCalibrationBenchmark(context)
+            },
+            onClearBiometricCalibrationReport = {
+                viewModel.clearBiometricCalibrationReport()
+            },
             onNavigateBack = { showSettings = false }
         )
         return

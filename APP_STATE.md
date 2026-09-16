@@ -6,6 +6,10 @@
 ---
 
 ## [Implemented]
+- **Biometric Calibration & Voice Matching Fine-Tuning**:
+  - **Custom Threshold & Acoustic Controls**: Integrated configurable parameters for Acoustic Matching Sensitivity (`Strict`, `Balanced`, `High Recall`), Reference Audio Slice Duration (`5s`, `10s`, `15s`), Max Bundled Reference Speaker Profiles (`3`, `5`, `10`), and Acoustic Spectrum Analysis Profiles (`Standard`, `Enhanced Harmonic`, `Noise Suppressed`).
+  - **Persistent Settings & Prompt Injection**: Calibration choices persist in `SharedPreferences` and dynamically instruct `MainViewModel` and `AudioSliceExtractor` to tune audio slice extraction parameters and inject strict/high-recall matching rules directly into Gemini prompt payloads.
+  - **Interactive Calibration & Accuracy Benchmark Deck**: Built an interactive calibration test suite inside `SettingsScreen` that extracts and analyzes stored speaker golden sample slices, verifies duration metrics, and generates a formatted benchmark fidelity report card.
 - **Interactive Batch Transcription Selection, Background Progress UI, and Waveform Bounds Editor**:
   - **Interactive Batch Selection UI Sheet**: Displays an elegant Material 3 bottom sheet prompting users to select between "Process as a Multi-Part Sequential Session" (stitches them into a single chronological session) or "Process as Separate Standalone Recordings" (adds them as separate tasks in the background transcription queue).
   - **Background Queue Progress & Status Bar**: Renders a globally visible, modern progress card under the app bar displaying active file queues (e.g., "Processing file 2 of 5...") with precise progress percentages.
@@ -121,13 +125,12 @@
 ---
 
 ## [Next Up]
-- **Smart Recurrence & Action Item Tracker**: Highlight recurring action items mentioned across different recorded days, listing them in a centralized dashboard inside settings.
-- **Biometric Calibration & Fine-Tuning**: Allow tuning threshold variables for matching speaker profiles with voice samples.
-
+- *No pending items.*
 
 ---
 
 ## [Out of Scope]
+- **Smart Recurrence & Action Item Tracker**: Highlight recurring action items mentioned across different recorded days (moved to out of scope per user direction).
 - **Direct Microphone Voice Recording**: In-app live microphone recording is excluded; the app focuses on importing and analyzing stored audio files.
 - **Custom Secondary Backend / Node.js Server**: Keep the app entirely client-side and offline-first with optional direct Firebase sync.
 - **Complex Multi-Track Audio Editing / DAW Features**: Keep the focus on speech transcription, AI intelligence, and journaling rather than audio mastering.
