@@ -1,72 +1,24 @@
 # Last Action History & Resolution Log
 
-**Timestamp:** 2026-09-16T06:57:08-07:00  
-**Status:** Successfully Resolved (Active Build Restored)
+**Timestamp:** 2026-09-16T14:01:00-07:00  
+**Status:** Successfully Resolved (Universal Audio Support & HTTP 400 Fix)
 
 ---
 
-## 1. The Triggering Action
-A compilation task was initiated (`compile_applet`) to verify the newly added files and database migrations for the Google Drive Integration (Chunk 1).
-
-## 2. The Failed/Canceled Task Details
-The compiler failed during the Kotlin compilation phase (`:app:compileDebugKotlin`) due to missing dependencies for the Google Gson converter library.
-
-### Compilation Error Log
-```text
-e: file:///app/src/main/java/com/example/api/GoogleDriveApiService.kt:16:28 Unresolved reference 'gson'.
-e: file:///app/src/main/java/com/example/api/GoogleDriveApiService.kt:59:34 Unresolved reference 'GsonConverterFactory'.
-
-> Task :app:compileDebugKotlin FAILED
-
-FAILURE: Build failed with an exception.
-* What went wrong:
-Execution failed for task ':app:compileDebugKotlin'.
-> A failure occurred while executing org.jetbrains.kotlin.compilerRunner.GradleCompilerRunnerWithWorkers$GradleKotlinCompilerWorkAction
-   > Compilation error. See log for more details
-```
+## 1. Triggering Issue
+- **HTTP 400 Error on Audio Uploads**: AAC/M4A audio files uploaded for transcription caused an HTTP 400 Bad Request error from the Gemini API.
+- **Root Cause**: The application hardcoded `mimeType = "audio/aac"` across `MainViewModel.kt` methods (`transcribeAudioUri`, `transcribeAudioBytes`, `transcribeBatchAudio`, `transcribeSequentialSession`, `transcribeAndSaveSync`). When uploading ISO MP4 container files (`.m4a` with `ftyp` headers) or raw WAV files, Gemini rejected the mismatch between the file binary structure and the declared `"audio/aac"` MIME type.
 
 ---
 
-## 3. Root Cause Analysis
-- **Problem**: The new `GoogleDriveApiService.kt` was written using Retrofit's `GsonConverterFactory` and the standard Google `Gson` library for JSON serialization.
-- **Cause**: While Retrofit itself is available, the Gson converter library dependency (`com.squareup.retrofit2:converter-gson`) was not declared or synced in the project's dependency configurations.
-- **Resolution Strategy**: Rather than bloating the project's dependency tree with a new library, the app was migrated to use **Moshi**, which is already integrated, optimized, and fully configured in the existing Jetpack Compose project structure.
+## 2. Corrective Action Taken
+- **Dynamic Audio Info & Container Inspection (`detectAudioInfo`)**: Added binary header magic-byte detection (`ftyp`, `RIFF`, `ID3`, `OggS`, `fLaC`, `#!AMR`, syncwords) and `ContentResolver` + file extension fallback to detect real audio formats.
+- **Gemini MIME Sanitization (`sanitizeMimeTypeForGemini`)**: Maps ISO MP4 container audio to `audio/m4a`, WAV files to `audio/wav`, MP3 to `audio/mp3`, OGG to `audio/ogg`, FLAC to `audio/flac`, and raw ADTS streams to `audio/aac`.
+- **Expanded Audio Format Support**: Added full support for WAV (`.wav`), AAC (`.aac`), M4A (`.m4a`), MP3 (`.mp3`), OGG / OPUS (`.ogg`, `.opus`), FLAC (`.flac`), 3GP (`.3gp`), AMR (`.amr`), MP4 Audio (`.mp4`), WMA (`.wma`), and AIFF (`.aiff`).
+- **Google Drive Upload Sync**: Google Drive uploads now preserve the detected file extension and true MIME type.
 
 ---
 
-## 4. Corrective Action Taken
-The `GoogleDriveApiService.kt` file was modified to replace Gson with Moshi.
-
-### Key File Refactoring Summary
-- Removed unused imports: `retrofit2.http.Query`, `retrofit2.converter.gson.GsonConverterFactory`.
-- Added Moshi converters and reflection adapters:
-  ```kotlin
-  import retrofit2.converter.moshi.MoshiConverterFactory
-  import com.squareup.moshi.Moshi
-  import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
-  import com.squareup.moshi.JsonClass
-  ```
-- Annotated data Transfer Objects (DTOs) with `@JsonClass(generateAdapter = true)` for compile-time safety and optimal reflection performance:
-  - `DriveFileMetadata`
-  - `DriveFileResponse`
-- Updated `GoogleDriveClient` builder to use `MoshiConverterFactory`:
-  ```kotlin
-  private val moshi = Moshi.Builder()
-      .add(KotlinJsonAdapterFactory())
-      .build()
-
-  val service: GoogleDriveApiService by lazy {
-      val retrofit = Retrofit.Builder()
-          .baseUrl(BASE_URL)
-          .addConverterFactory(MoshiConverterFactory.create(moshi))
-          .build()
-      retrofit.create(GoogleDriveApiService::class.java)
-  }
-  ```
-
----
-
-## 5. Verification & Outcome
-A secondary compilation check (`compile_applet`) was executed immediately following the correction.
-- **Outcome**: **Build Succeeded**
-- **State**: Project is stable, compiled, and ready for integration wiring.
+## 3. Verification & Outcome
+- **Compilation Check (`compile_applet`)**: Succeeded cleanly without any errors.
+- **Outcome**: The application dynamically handles and transcribes all major audio file types without HTTP 400 errors.

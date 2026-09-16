@@ -54,6 +54,12 @@ import com.example.R
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 
+import com.example.VisualErrorBanner
+import com.example.VisualInfoBanner
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.AutoAwesome
+
 private const val APP_PACKAGE_NAME = "com.aistudio.transcribeai.xyzq"
 private const val APP_DEBUG_SHA1 = "B5:9F:F2:77:10:96:D0:E2:EF:73:0C:86:98:1F:DE:D4:4C:D6:66:63"
 
@@ -66,7 +72,7 @@ private fun Context.findActivity(): Activity? {
     return null
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(
     uiState: UiState,
@@ -152,6 +158,141 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // Visual Error Banner inside Settings
+            uiState.error?.let { err ->
+                VisualErrorBanner(
+                    errorMessage = err,
+                    onDismiss = { }
+                )
+            }
+
+            // Visual Info/Success Banner inside Settings
+            uiState.infoMessage?.let { info ->
+                VisualInfoBanner(
+                    infoMessage = info,
+                    onDismiss = { }
+                )
+            }
+
+            // System Setup & Persistent Feedback Overview Deck
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+                ),
+                shape = RoundedCornerShape(16.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "System Setup & Feedback Overview",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                        )
+                    }
+
+                    Text(
+                        text = "Persistent indicators of your system configuration, active AI credentials, cloud sync status, and biometric profiles.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    FlowRow(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 1. Account Status
+                        AssistChip(
+                            onClick = { showEmailAuthDialog = true },
+                            label = {
+                                val isAuth = uiState.isAuthenticated && !uiState.isAnonymous
+                                Text(if (isAuth) (uiState.userEmail ?: "Signed In") else "Guest Mode (Local Only)")
+                            },
+                            leadingIcon = {
+                                val isAuth = uiState.isAuthenticated && !uiState.isAnonymous
+                                Icon(
+                                    imageVector = if (isAuth) Icons.Default.AccountCircle else Icons.Default.Person,
+                                    contentDescription = null,
+                                    tint = if (isAuth) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                )
+                            }
+                        )
+
+                        // 2. Drive Sync Status
+                        AssistChip(
+                            onClick = { showCloudSettingsDialog = true },
+                            label = { Text(if (uiState.isDriveConnected) "Google Drive Connected" else "Drive Sync Offline") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = if (uiState.isDriveConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                                    contentDescription = null,
+                                    tint = if (uiState.isDriveConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                )
+                            }
+                        )
+
+                        // 3. AI Provider & Key Status
+                        val aiModelLabel = when (uiState.aiProvider) {
+                            AiProvider.GEMINI -> if (uiState.customApiKey.isNotBlank()) "Gemini 3.5 (Custom Key)" else "Gemini 3.5 (Default Key)"
+                            AiProvider.OPENROUTER -> if (uiState.openRouterApiKey.isNotBlank()) "OpenRouter (Configured)" else "OpenRouter (No Key)"
+                            AiProvider.GROQ -> if (uiState.groqApiKey.isNotBlank()) "Groq Llama 3 (Configured)" else "Groq (No Key)"
+                        }
+                        AssistChip(
+                            onClick = { },
+                            label = { Text(aiModelLabel) },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.AutoAwesome,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        )
+
+                        // 4. Voice Biometrics Status
+                        val goldenCount = uiState.speakers.count { !it.goldenSampleAudioUri.isNullOrBlank() }
+                        AssistChip(
+                            onClick = { onOpenSpeakers?.invoke() },
+                            label = { Text("${uiState.speakers.size} Speakers ($goldenCount Golden Samples)") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.RecordVoiceOver,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.tertiary
+                                )
+                            }
+                        )
+
+                        // 5. Saved Locations / Venue Presets
+                        AssistChip(
+                            onClick = { },
+                            label = { Text("${uiState.locations.size} Venue Presets") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.LocationOn,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.secondary
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+
             Text(
                 text = "AI Provider & API Keys",
                 style = MaterialTheme.typography.titleLarge

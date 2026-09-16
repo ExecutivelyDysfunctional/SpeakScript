@@ -58,11 +58,11 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.draw.clip
 
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.example.ui.ThemeMode
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Sync
-
+import com.example.ui.AiProvider
+import com.example.ui.UiState
 import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.clickable
 import androidx.compose.material3.TextButton
@@ -70,7 +70,6 @@ import androidx.compose.animation.core.*
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-
 import androidx.compose.ui.text.style.TextAlign
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -79,6 +78,145 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.Build
 import com.example.service.RecordingService
+
+@Composable
+fun SystemStatusHeaderBar(
+    uiState: UiState,
+    onOpenSettings: () -> Unit,
+    onToggleMic: () -> Unit,
+    onOpenSpeakers: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        LazyRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 1. Account / Auth Pill
+            item {
+                val isAuth = uiState.isAuthenticated && !uiState.isAnonymous
+                AssistChip(
+                    onClick = onOpenSettings,
+                    label = {
+                        Text(
+                            text = if (isAuth) (uiState.userEmail ?: "Signed In") else "Guest Mode",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (isAuth) Icons.Default.AccountCircle else Icons.Default.Person,
+                            contentDescription = null,
+                            tint = if (isAuth) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.height(32.dp)
+                )
+            }
+
+            // 2. Drive Cloud Sync Pill
+            item {
+                AssistChip(
+                    onClick = onOpenSettings,
+                    label = {
+                        Text(
+                            text = if (uiState.isDriveConnected) "Drive Sync ON" else "Drive Offline",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (uiState.isDriveConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                            contentDescription = null,
+                            tint = if (uiState.isDriveConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.height(32.dp)
+                )
+            }
+
+            // 3. Active AI Provider Pill
+            item {
+                val providerLabel = when (uiState.aiProvider) {
+                    AiProvider.GEMINI -> "Gemini AI"
+                    AiProvider.OPENROUTER -> "OpenRouter"
+                    AiProvider.GROQ -> "Groq AI"
+                }
+                AssistChip(
+                    onClick = onOpenSettings,
+                    label = {
+                        Text(
+                            text = providerLabel,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.height(32.dp)
+                )
+            }
+
+            // 4. Voice Biometrics Roster Pill
+            item {
+                val goldenCount = uiState.speakers.count { !it.goldenSampleAudioUri.isNullOrBlank() }
+                AssistChip(
+                    onClick = onOpenSpeakers,
+                    label = {
+                        Text(
+                            text = "$goldenCount Golden Samples",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.RecordVoiceOver,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.height(32.dp)
+                )
+            }
+
+            // 5. Mic Selection Toggle Pill (Interactive!)
+            item {
+                FilterChip(
+                    selected = uiState.useBluetoothMic,
+                    onClick = onToggleMic,
+                    label = {
+                        Text(
+                            text = if (uiState.useBluetoothMic) "BT Mic Active" else "Device Mic",
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = if (uiState.useBluetoothMic) Icons.Default.BluetoothConnected else Icons.Default.Mic,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    },
+                    modifier = Modifier.height(32.dp)
+                )
+            }
+        }
+    }
+}
 
 @Composable
 fun ProcessingWaveformVisualizer(
@@ -593,6 +731,14 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 .padding(padding)
                 .fillMaxSize()
         ) {
+            // Persistent System Status & Configuration Header Bar
+            SystemStatusHeaderBar(
+                uiState = uiState,
+                onOpenSettings = { showSettings = true },
+                onToggleMic = { viewModel.toggleBluetoothMic() },
+                onOpenSpeakers = { currentTab = 2 }
+            )
+
             // Visual Error Banner (Zero silent failures in console)
             uiState.error?.let { err ->
                 VisualErrorBanner(

@@ -6,6 +6,10 @@
 ---
 
 ## [Implemented]
+- **Universal Audio Format Engine & MIME Detection Fix**:
+  - **Dynamic Audio Info & Container Inspection (`detectAudioInfo` & `sanitizeMimeTypeForGemini`)**: Replaced hardcoded `"audio/aac"` strings across single-part, multi-part, and batch transcription workflows with real-time byte signature inspection (checking `ftyp`, `RIFF`, `ID3`, `OggS`, `fLaC`, `#!AMR`, and sync bytes) combined with `ContentResolver` and extension parsing.
+  - **Eliminated HTTP 400 Bad Request Errors**: Standardized container and MIME mappings for Gemini (e.g. mapping `ftyp` ISO containers to `audio/m4a`, WAV files to `audio/wav`, MP3 to `audio/mp3`, OGG to `audio/ogg`, FLAC to `audio/flac`, and raw ADTS streams to `audio/aac`), ensuring complete API compliance and resolving upload errors.
+  - **Expanded Audio Format Processing**: Added full, dynamic file detection, local caching, Drive upload, and Gemini transcription support for WAV (`.wav`), AAC (`.aac`), M4A (`.m4a`), MP3 (`.mp3`), OGG / OPUS (`.ogg`, `.opus`), FLAC (`.flac`), 3GP (`.3gp`), AMR (`.amr`), MP4 Audio (`.mp4`), WMA (`.wma`), and AIFF (`.aiff`).
 - **GitHub Actions Workflows Modernization & Automated Builds**:
   - Disabled/removed old `build-apk.yml` workflow that caused build skips/failures on GitHub.
   - **Keystore Fallback & Resilient Signing**: Resolved `:app:validateSigningDebug` build failure when `debug.keystore` is absent in CI runners. Gradle `build.gradle.kts` now automatically decodes `debug.keystore.base64` at build time if present, and seamlessly falls back to Android Gradle Plugin's default debug signing config (`signingConfigs.getByName("debug")`) if `debug.keystore` is missing.

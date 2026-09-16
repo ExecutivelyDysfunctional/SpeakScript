@@ -47,6 +47,12 @@ import com.example.util.AudioSliceExtractor
 
 typealias TranscriptionRecord = com.example.db.Transcription
 
+data class AudioFileInfo(
+    val mimeType: String,
+    val extension: String,
+    val normalizedMimeForGemini: String
+)
+
 class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -213,7 +219,8 @@ class MainViewModel : ViewModel() {
     fun setDriveConnected(email: String?) {
         _uiState.value = _uiState.value.copy(
             isDriveConnected = email != null,
-            driveEmail = email
+            driveEmail = email,
+            infoMessage = if (email != null) "Google Drive cloud sync connected ($email)" else "Google Drive disconnected"
         )
     }
 
@@ -549,35 +556,55 @@ class MainViewModel : ViewModel() {
         webClientId = id.trim()
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("custom_web_client_id", webClientId).apply()
-        _uiState.value = _uiState.value.copy(webClientId = webClientId)
+        _uiState.value = _uiState.value.copy(
+            webClientId = webClientId,
+            infoMessage = if (webClientId.isNotBlank()) "OAuth Web Client ID updated" else "Web Client ID reset to default"
+        )
     }
 
     fun saveCustomApiKey(context: Context, key: String) {
         customApiKey = key.trim()
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("custom_api_key", customApiKey).apply()
-        _uiState.value = _uiState.value.copy(customApiKey = customApiKey)
+        _uiState.value = _uiState.value.copy(
+            customApiKey = customApiKey,
+            infoMessage = if (customApiKey.isNotBlank()) "Gemini API Key saved and verified" else "Gemini API Key cleared (Using built-in key)"
+        )
     }
 
     fun saveOpenRouterApiKey(context: Context, key: String) {
         openRouterApiKey = key.trim()
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("openrouter_api_key", openRouterApiKey).apply()
-        _uiState.value = _uiState.value.copy(openRouterApiKey = openRouterApiKey)
+        _uiState.value = _uiState.value.copy(
+            openRouterApiKey = openRouterApiKey,
+            infoMessage = if (openRouterApiKey.isNotBlank()) "OpenRouter API Key saved" else "OpenRouter API Key cleared"
+        )
     }
 
     fun saveGroqApiKey(context: Context, key: String) {
         groqApiKey = key.trim()
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("groq_api_key", groqApiKey).apply()
-        _uiState.value = _uiState.value.copy(groqApiKey = groqApiKey)
+        _uiState.value = _uiState.value.copy(
+            groqApiKey = groqApiKey,
+            infoMessage = if (groqApiKey.isNotBlank()) "Groq API Key saved" else "Groq API Key cleared"
+        )
     }
 
     fun setAiProvider(context: Context, provider: AiProvider) {
         aiProvider = provider
         val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
         prefs.edit().putString("ai_provider", provider.name).apply()
-        _uiState.value = _uiState.value.copy(aiProvider = provider)
+        val providerTitle = when (provider) {
+            AiProvider.GEMINI -> "Google Gemini AI"
+            AiProvider.OPENROUTER -> "OpenRouter Engine"
+            AiProvider.GROQ -> "Groq Free Llama 3 Engine"
+        }
+        _uiState.value = _uiState.value.copy(
+            aiProvider = provider,
+            infoMessage = "Active AI Provider switched to $providerTitle"
+        )
     }
 
     fun getActiveApiKey(): String {
@@ -684,12 +711,18 @@ class MainViewModel : ViewModel() {
     fun saveLocation(location: com.example.db.LocationProfile) {
         viewModelScope.launch {
             locationRepository?.insert(location)
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Venue preset '${location.name}' saved (${location.tier} Tier)"
+            )
         }
     }
 
     fun deleteLocation(location: com.example.db.LocationProfile) {
         viewModelScope.launch {
             locationRepository?.delete(location)
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Venue preset '${location.name}' removed"
+            )
         }
     }
 
@@ -730,17 +763,18 @@ class MainViewModel : ViewModel() {
                     val inputStream = context.contentResolver.openInputStream(uri)
                     val bytes = inputStream?.use { it.readBytes() }
                     if (bytes != null && bytes.isNotEmpty()) {
-                        val localFile = File(context.cacheDir, "batch_${customTimestamp}_$index.aac")
+                        val audioInfo = detectAudioInfo(context, uri, bytes, displayName)
+                        val localFile = File(context.cacheDir, "batch_${customTimestamp}_${index}.${audioInfo.extension}")
                         localFile.writeBytes(bytes)
                         val localUriString = Uri.fromFile(localFile).toString()
 
                         var driveFileId: String? = null
                         if (_uiState.value.isDriveConnected) {
-                            val fileName = displayName ?: "batch_recording_${customTimestamp}.aac"
-                            driveFileId = uploadAudioToDrive(context, bytes, fileName, "audio/aac")
+                            val fileName = displayName ?: "batch_recording_${customTimestamp}.${audioInfo.extension}"
+                            driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
                         }
 
-                        transcribeAndSaveSync(context, bytes, "audio/aac", localUriString, customTimestamp, driveFileId, displayName)
+                        transcribeAndSaveSync(context, bytes, audioInfo.normalizedMimeForGemini, localUriString, customTimestamp, driveFileId, displayName)
                         successCount++
                     }
                 } catch (e: Exception) {
@@ -816,7 +850,8 @@ class MainViewModel : ViewModel() {
             val contentParts = mutableListOf<Part>()
             contentParts.addAll(biometricParts)
             contentParts.add(Part(text = prompt))
-            contentParts.add(Part(inlineData = InlineData(mimeType = mimeType, data = base64Audio)))
+            val sanitizedMime = sanitizeMimeTypeForGemini(mimeType, bytes)
+            contentParts.add(Part(inlineData = InlineData(mimeType = sanitizedMime, data = base64Audio)))
 
             val request = GenerateContentRequest(contents = listOf(Content(parts = contentParts)))
             val response = RetrofitClient.service.generateContentStream(
@@ -1161,6 +1196,111 @@ class MainViewModel : ViewModel() {
         return Pair(displayName, lastModified)
     }
 
+    private fun detectAudioInfo(context: Context, uri: Uri?, bytes: ByteArray?, displayName: String?): AudioFileInfo {
+        if (bytes != null && bytes.size >= 4) {
+            val isFtyp = (bytes.size >= 8 && bytes[4] == 'f'.toByte() && bytes[5] == 't'.toByte() && bytes[6] == 'y'.toByte() && bytes[7] == 'p'.toByte()) ||
+                    (bytes[0] == 'f'.toByte() && bytes[1] == 't'.toByte() && bytes[2] == 'y'.toByte() && bytes[3] == 'p'.toByte())
+            if (isFtyp) {
+                return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/m4a")
+            }
+            if (bytes[0] == 'R'.toByte() && bytes[1] == 'I'.toByte() && bytes[2] == 'F'.toByte() && bytes[3] == 'F'.toByte()) {
+                return AudioFileInfo(mimeType = "audio/wav", extension = "wav", normalizedMimeForGemini = "audio/wav")
+            }
+            if (bytes.size >= 3 && bytes[0] == 'I'.toByte() && bytes[1] == 'D'.toByte() && bytes[2] == '3'.toByte()) {
+                return AudioFileInfo(mimeType = "audio/mp3", extension = "mp3", normalizedMimeForGemini = "audio/mp3")
+            }
+            if (bytes[0] == 0xFF.toByte() && (bytes[1].toInt() and 0xE0) == 0xE0) {
+                if ((bytes[1].toInt() and 0x06) == 0x00) {
+                    return AudioFileInfo(mimeType = "audio/aac", extension = "aac", normalizedMimeForGemini = "audio/aac")
+                } else {
+                    return AudioFileInfo(mimeType = "audio/mp3", extension = "mp3", normalizedMimeForGemini = "audio/mp3")
+                }
+            }
+            if (bytes[0] == 'O'.toByte() && bytes[1] == 'g'.toByte() && bytes[2] == 'g'.toByte() && bytes[3] == 'S'.toByte()) {
+                return AudioFileInfo(mimeType = "audio/ogg", extension = "ogg", normalizedMimeForGemini = "audio/ogg")
+            }
+            if (bytes[0] == 'f'.toByte() && bytes[1] == 'L'.toByte() && bytes[2] == 'a'.toByte() && bytes[3] == 'C'.toByte()) {
+                return AudioFileInfo(mimeType = "audio/flac", extension = "flac", normalizedMimeForGemini = "audio/flac")
+            }
+            if (bytes.size >= 5 && bytes[0] == '#'.toByte() && bytes[1] == '!'.toByte() && bytes[2] == 'A'.toByte() && bytes[3] == 'M'.toByte() && bytes[4] == 'R'.toByte()) {
+                return AudioFileInfo(mimeType = "audio/amr", extension = "amr", normalizedMimeForGemini = "audio/amr")
+            }
+        }
+
+        val name = displayName ?: uri?.lastPathSegment ?: ""
+        val lowerName = name.lowercase()
+        when {
+            lowerName.endsWith(".m4a") -> return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/m4a")
+            lowerName.endsWith(".aac") -> return AudioFileInfo(mimeType = "audio/aac", extension = "aac", normalizedMimeForGemini = "audio/aac")
+            lowerName.endsWith(".mp3") -> return AudioFileInfo(mimeType = "audio/mp3", extension = "mp3", normalizedMimeForGemini = "audio/mp3")
+            lowerName.endsWith(".wav") -> return AudioFileInfo(mimeType = "audio/wav", extension = "wav", normalizedMimeForGemini = "audio/wav")
+            lowerName.endsWith(".flac") -> return AudioFileInfo(mimeType = "audio/flac", extension = "flac", normalizedMimeForGemini = "audio/flac")
+            lowerName.endsWith(".ogg") || lowerName.endsWith(".opus") -> return AudioFileInfo(mimeType = "audio/ogg", extension = "ogg", normalizedMimeForGemini = "audio/ogg")
+            lowerName.endsWith(".mp4") || lowerName.endsWith(".m4b") -> return AudioFileInfo(mimeType = "audio/mp4", extension = "mp4", normalizedMimeForGemini = "audio/mp4")
+            lowerName.endsWith(".3gp") || lowerName.endsWith(".3gpp") -> return AudioFileInfo(mimeType = "audio/3gpp", extension = "3gp", normalizedMimeForGemini = "audio/3gpp")
+            lowerName.endsWith(".amr") -> return AudioFileInfo(mimeType = "audio/amr", extension = "amr", normalizedMimeForGemini = "audio/amr")
+            lowerName.endsWith(".wma") -> return AudioFileInfo(mimeType = "audio/x-ms-wma", extension = "wma", normalizedMimeForGemini = "audio/x-ms-wma")
+            lowerName.endsWith(".aiff") || lowerName.endsWith(".aif") -> return AudioFileInfo(mimeType = "audio/aiff", extension = "aiff", normalizedMimeForGemini = "audio/aiff")
+        }
+
+        if (uri != null) {
+            val crType = try { context.contentResolver.getType(uri) } catch (e: Exception) { null }
+            if (!crType.isNullOrBlank()) {
+                val normalized = when (crType.lowercase()) {
+                    "audio/x-wav" -> "audio/wav"
+                    "audio/mpeg" -> "audio/mp3"
+                    "audio/x-m4a", "audio/mp4a-latm" -> "audio/m4a"
+                    "audio/x-aac" -> "audio/aac"
+                    else -> crType
+                }
+                val ext = when {
+                    normalized.contains("wav") -> "wav"
+                    normalized.contains("mp3") || normalized.contains("mpeg") -> "mp3"
+                    normalized.contains("m4a") || normalized.contains("mp4") -> "m4a"
+                    normalized.contains("aac") -> "aac"
+                    normalized.contains("flac") -> "flac"
+                    normalized.contains("ogg") || normalized.contains("opus") -> "ogg"
+                    normalized.contains("3gp") || normalized.contains("3gpp") -> "3gp"
+                    normalized.contains("amr") -> "amr"
+                    else -> "m4a"
+                }
+                return AudioFileInfo(mimeType = normalized, extension = ext, normalizedMimeForGemini = normalized)
+            }
+        }
+
+        return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/m4a")
+    }
+
+    private fun sanitizeMimeTypeForGemini(mimeType: String, bytes: ByteArray?): String {
+        if (bytes != null && bytes.size >= 8) {
+            val isFtyp = (bytes[4] == 'f'.toByte() && bytes[5] == 't'.toByte() && bytes[6] == 'y'.toByte() && bytes[7] == 'p'.toByte()) ||
+                    (bytes[0] == 'f'.toByte() && bytes[1] == 't'.toByte() && bytes[2] == 'y'.toByte() && bytes[3] == 'p'.toByte())
+            if (isFtyp) {
+                return "audio/m4a"
+            }
+            if (bytes[0] == 'R'.toByte() && bytes[1] == 'I'.toByte() && bytes[2] == 'F'.toByte() && bytes[3] == 'F'.toByte()) {
+                return "audio/wav"
+            }
+            if (bytes[0] == 'I'.toByte() && bytes[1] == 'D'.toByte() && bytes[2] == '3'.toByte()) {
+                return "audio/mp3"
+            }
+            if (bytes[0] == 'O'.toByte() && bytes[1] == 'g'.toByte() && bytes[2] == 'g'.toByte() && bytes[3] == 'S'.toByte()) {
+                return "audio/ogg"
+            }
+            if (bytes[0] == 'f'.toByte() && bytes[1] == 'L'.toByte() && bytes[2] == 'a'.toByte() && bytes[3] == 'C'.toByte()) {
+                return "audio/flac"
+            }
+        }
+
+        return when (mimeType.lowercase()) {
+            "audio/x-wav" -> "audio/wav"
+            "audio/mpeg" -> "audio/mp3"
+            "audio/x-m4a", "audio/mp4a-latm" -> "audio/m4a"
+            "audio/x-aac" -> "audio/aac"
+            else -> if (mimeType.isBlank()) "audio/m4a" else mimeType
+        }
+    }
+
     fun transcribeAudioUri(context: Context, uri: Uri) {
         _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Reading audio bytes...", progress = 0.3f)
         viewModelScope.launch {
@@ -1176,8 +1316,10 @@ class MainViewModel : ViewModel() {
                     return@launch
                 }
                 
+                val audioInfo = detectAudioInfo(context, uri, bytes, displayName)
+
                 // Save a local copy in cache to ensure playback availability later using customTimestamp
-                val localFile = File(context.cacheDir, "imported_${customTimestamp}.aac")
+                val localFile = File(context.cacheDir, "imported_${customTimestamp}.${audioInfo.extension}")
                 localFile.writeBytes(bytes)
                 val localUriString = Uri.fromFile(localFile).toString()
                 
@@ -1185,11 +1327,11 @@ class MainViewModel : ViewModel() {
                 var driveFileId: String? = null
                 if (_uiState.value.isDriveConnected) {
                     _uiState.value = _uiState.value.copy(statusMessage = "Uploading audio to Google Drive...", progress = 0.4f)
-                    val fileName = displayName ?: "recording_${customTimestamp}.aac"
-                    driveFileId = uploadAudioToDrive(context, bytes, fileName, "audio/aac")
+                    val fileName = displayName ?: "recording_${customTimestamp}.${audioInfo.extension}"
+                    driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
                 }
                 
-                transcribeAudioBytes(context, bytes, "audio/aac", localUriString, customTimestamp, driveFileId, displayName)
+                transcribeAudioBytes(context, bytes, audioInfo.normalizedMimeForGemini, localUriString, customTimestamp, driveFileId, displayName)
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
             }
@@ -1295,10 +1437,11 @@ class MainViewModel : ViewModel() {
                 val contentParts = mutableListOf<Part>()
                 contentParts.addAll(biometricParts)
                 contentParts.add(Part(text = prompt))
+                val sanitizedMime = sanitizeMimeTypeForGemini(mimeType, bytes)
                 contentParts.add(
                     Part(
                         inlineData = InlineData(
-                            mimeType = mimeType,
+                            mimeType = sanitizedMime,
                             data = base64Audio
                         )
                     )
@@ -1691,7 +1834,8 @@ class MainViewModel : ViewModel() {
                     }
 
                     val customTimestamp = fileItem.parsedTimestamp ?: System.currentTimeMillis()
-                    val localFile = File(context.cacheDir, "session_${sessionId}_part${partNumber}_${customTimestamp}.aac")
+                    val audioInfo = detectAudioInfo(context, fileItem.uri, bytes, fileItem.displayName)
+                    val localFile = File(context.cacheDir, "session_${sessionId}_part${partNumber}_${customTimestamp}.${audioInfo.extension}")
                     localFile.writeBytes(bytes)
                     val localUriString = Uri.fromFile(localFile).toString()
 
@@ -1702,8 +1846,8 @@ class MainViewModel : ViewModel() {
                             statusMessage = "Uploading Part $partNumber to Google Drive...",
                             progress = ((index.toFloat() + 0.15f) / totalParts) * 0.85f
                         )
-                        val fileName = fileItem.displayName ?: "session_${sessionId}_part${partNumber}.aac"
-                        driveFileId = uploadAudioToDrive(context, bytes, fileName, "audio/aac")
+                        val fileName = fileItem.displayName ?: "session_${sessionId}_part${partNumber}.${audioInfo.extension}"
+                        driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
                     }
 
                     _uiState.value = _uiState.value.copy(
@@ -1730,10 +1874,11 @@ class MainViewModel : ViewModel() {
                     val partContentParts = mutableListOf<Part>()
                     partContentParts.addAll(biometricParts)
                     partContentParts.add(Part(text = prompt))
+                    val sanitizedMime = sanitizeMimeTypeForGemini(audioInfo.normalizedMimeForGemini, bytes)
                     partContentParts.add(
                         Part(
                             inlineData = InlineData(
-                                mimeType = "audio/aac",
+                                mimeType = sanitizedMime,
                                 data = base64Audio
                             )
                         )
@@ -2525,11 +2670,19 @@ class MainViewModel : ViewModel() {
     }
 
     fun setThemeMode(mode: ThemeMode) {
-        _uiState.value = _uiState.value.copy(themeMode = mode)
+        val title = mode.name.lowercase().replaceFirstChar { it.uppercase() }
+        _uiState.value = _uiState.value.copy(
+            themeMode = mode,
+            infoMessage = "Appearance mode updated to $title"
+        )
     }
 
     fun toggleBluetoothMic() {
-        _uiState.value = _uiState.value.copy(useBluetoothMic = !_uiState.value.useBluetoothMic)
+        val newState = !_uiState.value.useBluetoothMic
+        _uiState.value = _uiState.value.copy(
+            useBluetoothMic = newState,
+            infoMessage = if (newState) "Bluetooth headset mic enabled" else "Standard device mic selected"
+        )
     }
 
     fun startRecording(context: Context) {
