@@ -2542,7 +2542,10 @@ class MainViewModel : ViewModel() {
         } else {
             context.startService(intent)
         }
-        _uiState.value = _uiState.value.copy(isRecording = true)
+        _uiState.value = _uiState.value.copy(
+            isRecording = true,
+            infoMessage = "Live recording started..."
+        )
     }
 
     fun stopRecording(context: Context) {
@@ -2550,17 +2553,43 @@ class MainViewModel : ViewModel() {
             action = com.example.service.RecordingService.ACTION_STOP_RECORDING
         }
         context.startService(intent)
-        _uiState.value = _uiState.value.copy(isRecording = false)
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            isLoading = true,
+            statusMessage = "Finalizing live audio recording...",
+            infoMessage = "Recording finalized! Saving audio file to device storage & preparing AI transcription..."
+        )
     }
 
     fun processRecordedFile(context: Context, wavPath: String) {
         viewModelScope.launch {
             val file = java.io.File(wavPath)
-            if (file.exists()) {
+            if (file.exists() && file.length() > 0) {
                 val uri = android.net.Uri.fromFile(file)
+                _uiState.value = _uiState.value.copy(
+                    isLoading = true,
+                    statusMessage = "Analyzing audio & transcribing...",
+                    infoMessage = "Recording saved to Music/TranscribeAI on your device! Transcribing audio..."
+                )
                 transcribeSelectedAudio(context, uri)
+            } else {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    statusMessage = null,
+                    error = "Recorded audio file is empty or missing."
+                )
             }
         }
+    }
+
+    fun onGoogleSignInSuccess(email: String?) {
+        _uiState.value = _uiState.value.copy(
+            isAuthenticated = true,
+            isAnonymous = false,
+            userEmail = email ?: "Google User",
+            infoMessage = "Signed in successfully as ${email ?: "Google User"}"
+        )
+        loadTranscriptions()
     }
 }
 

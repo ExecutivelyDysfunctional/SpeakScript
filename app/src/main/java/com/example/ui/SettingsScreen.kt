@@ -79,6 +79,7 @@ fun SettingsScreen(
     onExportAllJson: () -> Unit = {},
     onImportJson: () -> Unit = {},
     onDriveConnected: (String?) -> Unit = {},
+    onSignInSuccess: (String) -> Unit = {},
     onOpenSpeakers: (() -> Unit)? = null,
     onSaveLocation: (com.example.db.LocationProfile) -> Unit = {},
     onDeleteLocation: (com.example.db.LocationProfile) -> Unit = {},
@@ -116,6 +117,7 @@ fun SettingsScreen(
                 FirebaseAuth.getInstance().signInWithCredential(authCredential)
                     .addOnSuccessListener {
                         val email = it.user?.email ?: "Google Account"
+                        onSignInSuccess(email)
                         android.widget.Toast.makeText(context, "Signed in successfully as $email", android.widget.Toast.LENGTH_SHORT).show()
                     }
                     .addOnFailureListener { e ->
@@ -592,6 +594,8 @@ fun SettingsScreen(
                     }
                 }
 
+                var showDriveError10Dialog by remember { mutableStateOf(false) }
+
                 val driveSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
                     contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
                 ) { result ->
@@ -600,6 +604,13 @@ fun SettingsScreen(
                         val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
                         onDriveConnected(account?.email)
                         android.widget.Toast.makeText(context, "Drive connected: ${account?.email}", android.widget.Toast.LENGTH_SHORT).show()
+                    } catch (e: com.google.android.gms.common.api.ApiException) {
+                        onDriveConnected(null)
+                        if (e.statusCode == 10) {
+                            showDriveError10Dialog = true
+                        } else {
+                            android.widget.Toast.makeText(context, "Drive connection failed (Code ${e.statusCode}): ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                        }
                     } catch (e: Exception) {
                         onDriveConnected(null)
                         android.widget.Toast.makeText(context, "Drive connection failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
@@ -631,11 +642,13 @@ fun SettingsScreen(
                 } else {
                     Button(
                         onClick = {
-                            val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
+                            val gsoBuilder = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
                                 .requestEmail()
                                 .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
-                                .build()
-                            val mGoogleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
+                            if (serverClientId.isNotBlank() && !serverClientId.contains("default_web_client_id")) {
+                                gsoBuilder.requestIdToken(serverClientId)
+                            }
+                            val mGoogleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gsoBuilder.build())
                             driveSignInLauncher.launch(mGoogleSignInClient.signInIntent)
                         },
                         modifier = Modifier.fillMaxWidth(),
@@ -649,6 +662,87 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(8.dp))
                         Text("Connect Google Drive")
                     }
+                }
+
+                if (showDriveError10Dialog) {
+                    AlertDialog(
+                        onDismissRequest = { showDriveError10Dialog = false },
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    imageVector = Icons.Default.Info,
+                                    contentDescription = "Info",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Google Drive Setup (Error 10)")
+                            }
+                        },
+                        text = {
+                            Column(
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = "Why Drive connection returned Error 10:",
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Text(
+                                    text = "Error 10 (DEVELOPER_ERROR) indicates that Google Cloud / Firebase requires registering this app's package name and SHA-1 certificate fingerprint under OAuth 2.0 Client IDs.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    text = "To enable Google Drive Cloud Auto-Sync, register this build's SHA-1 key in your Google Cloud / Firebase Console.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+
+                                Surface(
+                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Column(
+                                        modifier = Modifier.padding(10.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text("Package: $APP_PACKAGE_NAME", style = MaterialTheme.typography.labelSmall)
+                                        Text("SHA-1: $APP_DEBUG_SHA1", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
+
+                                Text(
+                                    text = "Local Device Features Active:\n" +
+                                            "• Audio recordings automatically save to Music/TranscribeAI on your phone.\n" +
+                                            "• Transcriptions and AI summaries work 100% locally.\n" +
+                                            "• You can export your data and audio files anytime.",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        },
+                        confirmButton = {
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                TextButton(
+                                    onClick = {
+                                        copyToClipboard("App Credentials", "Package: $APP_PACKAGE_NAME\nSHA-1: $APP_DEBUG_SHA1")
+                                    }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy",
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Copy SHA-1")
+                                }
+                                Button(onClick = { showDriveError10Dialog = false }) {
+                                    Text("Dismiss")
+                                }
+                            }
+                        }
+                    )
                 }
 
 

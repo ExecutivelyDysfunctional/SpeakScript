@@ -477,6 +477,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
             },
             onDriveConnected = { viewModel.setDriveConnected(it) },
+            onSignInSuccess = { viewModel.onGoogleSignInSuccess(it) },
             onOpenSpeakers = {
                 showSettings = false
                 currentTab = 2

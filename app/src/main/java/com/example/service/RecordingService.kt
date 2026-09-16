@@ -121,12 +121,13 @@ class RecordingService : Service() {
 
     private fun stopRecording() {
         isRecording = false
-        recordingJob?.cancel()
         
         audioRecord?.apply {
             try {
                 stop()
-            } catch (e: Exception) {}
+            } catch (e: Exception) {
+                Log.e("RecordingService", "Error stopping audioRecord", e)
+            }
             release()
         }
         audioRecord = null
@@ -135,15 +136,60 @@ class RecordingService : Service() {
         audioManager.stopBluetoothSco()
         audioManager.isBluetoothScoOn = false
 
+        runBlocking {
+            try {
+                recordingJob?.join()
+            } catch (e: Exception) {
+                Log.e("RecordingService", "Error waiting for recording coroutine", e)
+            }
+        }
+
         // Finalize PCM to WAV
         currentOutputFile?.let { pcmFile ->
             val wavFile = File(pcmFile.absolutePath.replace(".pcm", ".wav"))
             pcmToWav(pcmFile, wavFile)
-            // Notify system or ViewModel about the new file
+            
+            // Automatically save a copy to the phone's public Music/TranscribeAI folder so search finds it
+            saveWavToPublicMusicFolder(wavFile)
+
+            // Notify system or ViewModel about the new file with explicit package targeting
             val intent = Intent(ACTION_RECORDING_FINISHED).apply {
                 putExtra(EXTRA_WAV_PATH, wavFile.absolutePath)
+                setPackage(packageName)
             }
             sendBroadcast(intent)
+        }
+    }
+
+    private fun saveWavToPublicMusicFolder(wavFile: File) {
+        try {
+            if (!wavFile.exists() || wavFile.length() == 0L) return
+            val fileName = wavFile.name
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Audio.Media.DISPLAY_NAME, fileName)
+                    put(android.provider.MediaStore.Audio.Media.MIME_TYPE, "audio/wav")
+                    put(android.provider.MediaStore.Audio.Media.RELATIVE_PATH, "${android.os.Environment.DIRECTORY_MUSIC}/TranscribeAI")
+                    put(android.provider.MediaStore.Audio.Media.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, values)
+                if (uri != null) {
+                    contentResolver.openOutputStream(uri)?.use { out ->
+                        wavFile.inputStream().use { input -> input.copyTo(out) }
+                    }
+                    values.clear()
+                    values.put(android.provider.MediaStore.Audio.Media.IS_PENDING, 0)
+                    contentResolver.update(uri, values, null, null)
+                }
+            } else {
+                val musicDir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_MUSIC), "TranscribeAI")
+                if (!musicDir.exists()) musicDir.mkdirs()
+                val destFile = File(musicDir, fileName)
+                wavFile.copyTo(destFile, overwrite = true)
+                android.media.MediaScannerConnection.scanFile(this, arrayOf(destFile.absolutePath), arrayOf("audio/wav"), null)
+            }
+        } catch (e: Exception) {
+            Log.e("RecordingService", "Failed to save audio file to public Music directory", e)
         }
     }
 
