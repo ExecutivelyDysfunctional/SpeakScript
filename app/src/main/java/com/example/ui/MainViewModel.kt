@@ -776,27 +776,56 @@ class MainViewModel : ViewModel() {
 
     fun askComplexQuestion(question: String) {
         viewModelScope.launch {
-            _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Querying Gemini (High Thinking)...", progress = 0.5f)
+            _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Querying AI...", progress = 0.5f)
             try {
                 val apiKey = getActiveApiKey()
-                val request = GenerateContentRequest(
-                    contents = listOf(
-                        Content(
-                            parts = listOf(Part(text = question))
+                val resultText = when (aiProvider) {
+                    AiProvider.GEMINI -> {
+                        val request = GenerateContentRequest(
+                            contents = listOf(
+                                Content(parts = listOf(Part(text = question)))
+                            ),
+                            generationConfig = GenerationConfig(
+                                thinkingConfig = ThinkingConfig(thinkingLevel = "HIGH")
+                            )
                         )
-                    ),
-                    generationConfig = GenerationConfig(
-                        thinkingConfig = ThinkingConfig(thinkingLevel = "HIGH")
-                    )
-                )
-
-                val response = RetrofitClient.service.generateContent(
-                    model = "gemini-3.1-pro-preview",
-                    apiKey = apiKey,
-                    request = request
-                )
+                        val response = RetrofitClient.service.generateContent(
+                            model = "gemini-3.1-pro-preview",
+                            apiKey = apiKey,
+                            request = request
+                        )
+                        response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No answer found"
+                    }
+                    AiProvider.OPENROUTER -> {
+                        val request = com.example.api.OpenAiChatRequest(
+                            model = "anthropic/claude-3-opus-20240229",
+                            messages = listOf(
+                                com.example.api.OpenAiMessage(role = "user", content = question)
+                            )
+                        )
+                        val response = com.example.api.OpenRouterClient.service.chatCompletions(
+                            authHeader = "Bearer $apiKey",
+                            referrer = "https://transcriber.app",
+                            title = "Transcriber App",
+                            request = request
+                        )
+                        response.choices?.firstOrNull()?.message?.content ?: "No answer found"
+                    }
+                    AiProvider.GROQ -> {
+                        val request = com.example.api.OpenAiChatRequest(
+                            model = "llama3-70b-8192",
+                            messages = listOf(
+                                com.example.api.OpenAiMessage(role = "user", content = question)
+                            )
+                        )
+                        val response = com.example.api.GroqClient.service.chatCompletions(
+                            authHeader = "Bearer $apiKey",
+                            request = request
+                        )
+                        response.choices?.firstOrNull()?.message?.content ?: "No answer found"
+                    }
+                }
                 
-                val resultText = response.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text ?: "No answer found"
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     statusMessage = null,

@@ -6,6 +6,11 @@
 ---
 
 ## [Implemented]
+- **Multi-Part Sessions Phase 3 (Gapless Playback & Cumulative Transcript Engine)**: 
+  - Seamless auto-advance across sequential parts in the player.
+  - Unified cumulative waveform visualizer with global scrubbing and segment cut markers.
+  - Continuous cumulative transcript line tracking with global millisecond positioning.
+- **OpenRouter & Groq Provider Execution**: Configured OpenRouter (Claude Opus) and Groq (Llama3) API key routing in the "High Thinking" complex query pipeline.
 - **Multi-Part Sequential Audio Session Import & Pipeline (Phase 1)**:
   - Multi-file audio picker allowing selection of single or multiple sequential recording parts.
   - Smart natural file sequence analysis (`analyzeSelectedFilesForSequence`) with natural numeric sorting and timestamp detection.
@@ -68,9 +73,22 @@
 ---
 
 ## [Next Up]
-- **Multi-Part Sessions Phase 3 (Gapless Playback & Cumulative Transcript Engine)**: Seamless auto-advance across sequential parts in the player with unified cumulative waveform and continuous transcript line tracking.
-- **OpenRouter & Groq Provider Execution**: Connect the configured OpenRouter and Groq API keys to the transcription and query execution pipeline.
-- **[Workshop / On Hold] Personal Audio Tagging & Filtering**: Design a taxonomy of tags customized specifically for personal recordings and notes (excluding unneeded work/meeting/lecture categories) to be refined later.
+- **Personal Audio Tagging Taxonomy (The "Who, When, Where" Update)**:
+  - **Google Drive Storage & Automated File Management**:
+    - Implement Google Drive OAuth integration to automatically upload and stream audio files, relying on permanent `Drive File IDs` instead of fragile local file paths.
+    - Automatic local cache cleanup to save device storage.
+    - AI-driven auto-renaming and folder organization based on transcribed context.
+  - **Speaker Profiles & Voice Biometrics**:
+    - **Known Speakers Roster**: Global database of named individuals across all recordings.
+    - **Golden Samples**: Allow users to verify pristine 10-15s clips of individuals to serve as audio references.
+    - **Few-Shot Audio Prompting**: Bundle Golden Samples with new recordings so Gemini 1.5 can acoustically compare and identify speakers automatically.
+    - **Auto-Candidate Extraction**: The AI suggests the best quality audio segments for new speakers, requiring only a one-tap user verification to save as a Golden Sample.
+  - **Location Tiers**:
+    - Track "Preset/Saved Locations" (e.g., Home, Greg's House), "Exact Addresses" (dictated in audio), and "Ambient Locations" (inferred environments like "In Transit").
+  - **Mentioned vs. Active People**:
+    - Differentiate between individuals who are actively speaking in the audio (diarization) versus individuals who are just talked about in the text (entity extraction).
+  - **Rich History Filter UI**:
+    - Update the History screen with toggleable chips to filter by Dates, Specific Locations, Active Speakers, and Mentioned People.
 
 ---
 
