@@ -576,6 +576,39 @@ fun SettingsScreen(
                     }
                 }
 
+                val driveSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                    contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
+                ) { result ->
+                    val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                    try {
+                        val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                        android.widget.Toast.makeText(context, "Drive connected: ${account?.email}", android.widget.Toast.LENGTH_SHORT).show()
+                    } catch (e: Exception) {
+                        android.widget.Toast.makeText(context, "Drive connection failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        val gso = com.google.android.gms.auth.api.signin.GoogleSignInOptions.Builder(com.google.android.gms.auth.api.signin.GoogleSignInOptions.DEFAULT_SIGN_IN)
+                            .requestEmail()
+                            .requestScopes(com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file"))
+                            .build()
+                        val mGoogleSignInClient = com.google.android.gms.auth.api.signin.GoogleSignIn.getClient(context, gso)
+                        driveSignInLauncher.launch(mGoogleSignInClient.signInIntent)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CloudDone,
+                        contentDescription = "Drive",
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Connect Google Drive")
+                }
+
                 // Sign In with Email Button
                 OutlinedButton(
                     onClick = { showEmailAuthDialog = true },

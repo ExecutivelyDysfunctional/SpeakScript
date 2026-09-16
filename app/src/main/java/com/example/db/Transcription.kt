@@ -34,7 +34,9 @@ data class Transcription(
     @ColumnInfo(name = "session_title")
     val sessionTitle: String? = null,
     @ColumnInfo(name = "part_duration_ms")
-    val partDurationMs: Int? = null
+    val partDurationMs: Int? = null,
+    @ColumnInfo(name = "drive_file_id")
+    val driveFileId: String? = null
 ) {
     // Backwards-compatibility convenience properties
     val text: String
