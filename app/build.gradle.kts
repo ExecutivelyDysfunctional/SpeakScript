@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Base64
 
 plugins {
   alias(libs.plugins.android.application)
@@ -31,11 +32,25 @@ android {
       keyAlias = "upload"
       keyPassword = System.getenv("KEY_PASSWORD")
     }
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
-      storePassword = "android"
-      keyAlias = "androiddebugkey"
-      keyPassword = "android"
+
+    val debugKeystoreFile = file("${rootDir}/debug.keystore")
+    val debugBase64File = file("${rootDir}/debug.keystore.base64")
+    if (!debugKeystoreFile.exists() && debugBase64File.exists()) {
+      try {
+        val bytes = Base64.getDecoder().decode(debugBase64File.readText().trim())
+        debugKeystoreFile.writeBytes(bytes)
+      } catch (_: Exception) {
+        // Ignore decode errors and fallback to default debug config
+      }
+    }
+
+    if (debugKeystoreFile.exists()) {
+      create("debugConfig") {
+        storeFile = debugKeystoreFile
+        storePassword = "android"
+        keyAlias = "androiddebugkey"
+        keyPassword = "android"
+      }
     }
   }
 
@@ -46,7 +61,14 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug { signingConfig = signingConfigs.getByName("debugConfig") }
+    debug {
+      val customDebugConfig = signingConfigs.findByName("debugConfig")
+      if (customDebugConfig != null) {
+        signingConfig = customDebugConfig
+      } else {
+        signingConfig = signingConfigs.getByName("debug")
+      }
+    }
   }
   compileOptions {
     sourceCompatibility = JavaVersion.VERSION_11

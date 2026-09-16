@@ -8,6 +8,7 @@
 ## [Implemented]
 - **GitHub Actions Workflows Modernization & Automated Builds**:
   - Disabled/removed old `build-apk.yml` workflow that caused build skips/failures on GitHub.
+  - **Keystore Fallback & Resilient Signing**: Resolved `:app:validateSigningDebug` build failure when `debug.keystore` is absent in CI runners. Gradle `build.gradle.kts` now automatically decodes `debug.keystore.base64` at build time if present, and seamlessly falls back to Android Gradle Plugin's default debug signing config (`signingConfigs.getByName("debug")`) if `debug.keystore` is missing.
   - **Immediate Debug APK Build Workflow (`immediate-build.yml`)**: Triggers an immediate APK build upon any push to `main` / `master` or manually via `workflow_dispatch`. Decodes base64 debug keystores and sets up `.env` dynamically.
   - **Scheduled Debug APK Build Workflow (`scheduled-build.yml`)**: Runs twice daily (`cron: '0 0,12 * * *'`). Inspects git commit history to detect new builds within the 12-hour window; builds and uploads artifacts if new commits exist, or cleanly skips execution if no changes are present.
 - **Biometric Calibration & Voice Matching Fine-Tuning**:

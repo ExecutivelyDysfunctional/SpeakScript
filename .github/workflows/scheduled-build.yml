@@ -40,7 +40,7 @@ jobs:
         if: steps.check_commits.outputs.has_new_build == 'true'
         run: |
           if [ -f "debug.keystore.base64" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null || base64 --decode -i debug.keystore.base64 > debug.keystore 2>/dev/null || true
             echo "Decoded debug.keystore from base64."
           fi
           if [ ! -f ".env" ] && [ -f ".env.example" ]; then
