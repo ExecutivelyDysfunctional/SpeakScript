@@ -6,6 +6,54 @@
 ---
 
 ## [Implemented]
+- **Interactive Batch Transcription Selection, Background Progress UI, and Waveform Bounds Editor**:
+  - **Interactive Batch Selection UI Sheet**: Displays an elegant Material 3 bottom sheet prompting users to select between "Process as a Multi-Part Sequential Session" (stitches them into a single chronological session) or "Process as Separate Standalone Recordings" (adds them as separate tasks in the background transcription queue).
+  - **Background Queue Progress & Status Bar**: Renders a globally visible, modern progress card under the app bar displaying active file queues (e.g., "Processing file 2 of 5...") with precise progress percentages.
+  - **Waveform Golden Sample Bounds Editor**: Seamlessly integrated drag-to-trim bounds directly on the interactive 52-bar waveform canvas. Tapping on a "Golden Clip" badge lets users visually adjust start and end handles and verify their clip.
+
+- **Location Tiers & Ambient Venue Tagging**:
+  - **Saved Venue Presets Directory**: Created a database model (`LocationProfile`), DAO, and repository supporting venue tagging with custom addresses, location notes, and real-time visit count logging.
+  - **Ambient Location Extraction & Auto-Matching**: Gemini summary extractions dynamically match against saved preset locations, auto-matching venue titles and incrementing visit counts with zero user overhead.
+  - **Interactive Venue Management Deck**: Custom, modern management pane inside Settings allowing users to add, review, edit, or delete preset venues with a single tap.
+- **Diarization Confidence & Feedback Loop**:
+  - **Confidence Badge Scoring**: Parsed and saved diarization confidence levels (`High`, `Medium`, `Low`) inside the Room database schema and displayed high-visibility, color-coded confidence badges across Journal history cards and playback reviews.
+  - **Interactive Verification & Label Correction**: Tapping on the diarization confidence badge on the Playback Screen opens an interactive validation dialog where users can manually edit active speaker rosters and verify confidence levels on-the-fly.
+- **Few-Shot Audio Voice Biometrics with Gemini (Golden Sample Prompting)**:
+  - **Verified Reference Audio Slicing (`AudioSliceExtractor.kt`)**: High-fidelity audio segment extraction utility using Android's `MediaExtractor` and `MediaMuxer` (with stream read fallback) to cleanly carve 10–15 second golden reference audio slices (`goldenSampleAudioUri`, `startMs`, `endMs`) from known speaker profiles.
+  - **Multimodal Biometric Voice Context Injection**: `MainViewModel.transcribeAudioBytes` and `transcribeSequentialSession` automatically inspect the local `SpeakerProfile` directory for registered speakers with verified Golden Samples and bundle them as separate `Part` objects (`InlineData` with base64 audio and metadata headers) alongside the target recording payload.
+  - **Acoustic Vocal Matching Instructions**: Enhanced system prompt instructing Gemini 3.5 Flash to acoustically compare target speaker voices against the verified Golden Sample reference audio clips, auto-labeling transcript dialogue lines with verified canonical names.
+  - **Directory-Enriched Structured Summary Extraction**: Prompting pipeline injects registered roster names into the structured JSON summary extractor (`location`, `active_speakers`, `mentioned_people`) ensuring accurate attribution across conversation insights.
+- **Dynamic Journal History Filtering & Filtering Bar**:
+  - **Multi-Dimensional Filter Bar (`LazyRow`)**: Elegant filter chips row positioned directly above the Search Bar in `TranscriptionHistoryScreen.kt` featuring:
+    - **Active Filter Counter & Clear Chip**: Error-container tinted quick "Clear (X)" button appearing whenever filters or search terms are active to reset all filters in a single tap.
+    - **Date Range / Time Bucket Filter**: Dropdown filter chip supporting "All Time", "Today", "Past 7 Days", and "This Month".
+    - **Specific Speaker Filter**: Dropdown filter chip dynamically populated from `SpeakerProfile` directory and transcript records, with individual dismiss cross.
+    - **Location Filter**: Dropdown filter chip dynamically extracted from distinct inferred and assigned locations in journal history.
+    - **Quick Suggestion Chips**: One-tap suggestion chips for top registered speakers and frequent locations for effortless thumb navigation.
+    - **Interactive Speaker & Location Linking**: Tapping on a speaker profile card inside `SpeakerDetailDialog` offers a dedicated "Filter Journal" button to immediately isolate that speaker's recordings.
+- **Personal Audio Tagging & Speaker Biometrics (Known Speakers Roster & Profile Management - Chunk 4)**:
+  - **Room DB V10 Schema Migration**: Dedicated `SpeakerProfile` entity (`speaker_profiles` table), `SpeakerDao`, and `SpeakerRepository` tracking speaker ID, canonical name, relationship/role, color hex badge, golden sample audio URI, segment start/end timestamps, recording title reference, total recordings count, and last heard timestamp.
+  - **Auto-Syncing Profile Stats**: `MainViewModel.syncSpeakersFromHistory` dynamically scans journal history and auto-creates or updates speaker profile recording counts and last heard dates.
+  - **Dedicated Speakers Directory Screen (`SpeakerManagementScreen.kt`)**: Top-level 3rd tab in navigation and linked from Settings, featuring searchable speaker profiles, stats chips, custom color picker dialog, role assignment, and Golden Sample audio preview playback controls.
+  - **Transcript Dynamic Color Badges**: Integrated `SpeakerProfile.colorHex` into transcript views across `PlaybackScreen` and history cards, highlighting speakers with their personalized color badges and verified Golden Sample icons.
+  - **In-Transcript Golden Sample Tagging**: One-tap "Assign Golden Clip" on any transcript line in `PlaybackScreen` opening `AssignGoldenSampleDialog` with live audio preview and quick speaker assignment or on-the-fly profile creation.
+  - **Modal Speaker Detail Dialog (`SpeakerDetailDialog`)**: Clicking on any speaker tag in `PlaybackScreen` or journal history cards opens a rich modal profile card with stats, golden clip preview/removal, and quick profile editing.
+- **Google Drive Contextual Automation & Folder Organization (Chunk 3)**:
+  - **Context-Aware File Renaming**: Automatically renames uploaded audio files in Google Drive via `GoogleDriveApiService.updateFileMetadata` to clean, standardized format: `[YYYY-MM-DD] <Location or Title> - <Session Title>.<ext>`.
+  - **Contextual Folder Hierarchy**: Automatically creates and maintains structured Google Drive folder directories: `Transcribe AI / <Location>` (or chronological fallback `Transcribe AI / YYYY-MM`). Audio files are dynamically relocated into their designated folder by updating file parents (`addParents` / `removeParents`).
+  - **Companion Document Upload**: Automatically generates and uploads structured companion JSON documents (`[YYYY-MM-DD] <Title> - Transcript & Summary.json`) containing complete session metadata, active speaker rosters, mentioned individuals, full transcript text, and executive AI summaries directly into the target Google Drive folder alongside the audio file.
+  - **Multi-Part Session Folder Integration**: Extended to multi-part sequential sessions (`organizeDriveSequentialSessionArtifacts`), renaming every session part chronologically (`[YYYY-MM-DD] <Session Title> - Part X of Y.<ext>`) and uploading a master session companion document with per-part metadata.
+- **Personal Audio Tagging Taxonomy (The "Who, When, Where" Update)**:
+  - Enriched database schema (`locationName`, `activeSpeakersCsv`, `mentionedPeopleCsv` columns inside `Transcription` entity, with full Room Version 8 to Version 9 migration logic).
+  - Modern, responsive card layout inside `SingleRecordingCard` displaying these taxonomy fields with clean, dedicated Material 3 icons (**Place**, **People**, **Person**).
+  - High-performance, JSON-schema guided Gemini post-processing pipeline utilizing the `responseMimeType = "application/json"` config. Automatically extracts high-quality inferred locations, active speaker rosters, and mentioned entities directly from the conversation.
+  - Formatted JSON data portability: fully integrated new tagging fields into existing JSON exports (`exportTranscriptionToJson`, `exportSessionToJson`, `exportAllTranscriptionsToJson`) and JSON import/restore engines (`parseRecordObject`), preserving historical and migrated database backups seamlessly.
+- **Google Drive Storage & Automated Cloud File Management**:
+  - Full Google Drive OAuth integration supporting standard Google Sign-In with the modern, secure `drive.file` scope.
+  - Interactive, dynamic **Connect / Disconnect Google Drive** action deck inside `SettingsScreen` with user email identification feedback.
+  - **Automated Audio Cloud-Uploader Engine**: Automatically uploads single-part imports (`transcribeAudioUri`) and multi-part recording sessions (`transcribeSequentialSession`) chronological parts directly to the user's Google Drive space upon successful transcription selection.
+  - **Permanent Cloud Association**: Captures and maps permanent Google Drive File IDs (`driveFileId`) inside the Room Database (Schema Version 8 migration).
+  - **Transparent Cloud Fallback Streaming**: High-performance streaming direct from Google Drive's API (`alt=media`) using custom headers containing secure Bearer authentication tokens inside `PlaybackScreen`'s `MediaPlayer` engine. Safely activates whenever local cached audio files are missing or cleared, preserving continuous, zero-storage playback.
 - **Multi-Part Sessions Phase 3 (Gapless Playback & Cumulative Transcript Engine)**: 
   - Seamless auto-advance across sequential parts in the player.
   - Unified cumulative waveform visualizer with global scrubbing and segment cut markers.
@@ -73,22 +121,9 @@
 ---
 
 ## [Next Up]
-- **Personal Audio Tagging Taxonomy (The "Who, When, Where" Update)**:
-  - **Google Drive Storage & Automated File Management**:
-    - Implement Google Drive OAuth integration to automatically upload and stream audio files, relying on permanent `Drive File IDs` instead of fragile local file paths.
-    - Automatic local cache cleanup to save device storage.
-    - AI-driven auto-renaming and folder organization based on transcribed context.
-  - **Speaker Profiles & Voice Biometrics**:
-    - **Known Speakers Roster**: Global database of named individuals across all recordings.
-    - **Golden Samples**: Allow users to verify pristine 10-15s clips of individuals to serve as audio references.
-    - **Few-Shot Audio Prompting**: Bundle Golden Samples with new recordings so Gemini 1.5 can acoustically compare and identify speakers automatically.
-    - **Auto-Candidate Extraction**: The AI suggests the best quality audio segments for new speakers, requiring only a one-tap user verification to save as a Golden Sample.
-  - **Location Tiers**:
-    - Track "Preset/Saved Locations" (e.g., Home, Greg's House), "Exact Addresses" (dictated in audio), and "Ambient Locations" (inferred environments like "In Transit").
-  - **Mentioned vs. Active People**:
-    - Differentiate between individuals who are actively speaking in the audio (diarization) versus individuals who are just talked about in the text (entity extraction).
-  - **Rich History Filter UI**:
-    - Update the History screen with toggleable chips to filter by Dates, Specific Locations, Active Speakers, and Mentioned People.
+- **Smart Recurrence & Action Item Tracker**: Highlight recurring action items mentioned across different recorded days, listing them in a centralized dashboard inside settings.
+- **Biometric Calibration & Fine-Tuning**: Allow tuning threshold variables for matching speaker profiles with voice samples.
+
 
 ---
 
@@ -104,14 +139,20 @@
 - `metadata.json`: Application metadata and platform capabilities for AI Studio.
 - `app/build.gradle.kts`: Gradle build script with dependencies for Compose, Room, Retrofit, and Firebase.
 - `app/src/main/AndroidManifest.xml`: Android application manifest declaring permissions and activities.
-- `app/src/main/java/com/example/MainActivity.kt`: Primary entry activity, top-level navigation tabs, audio picker, player, and transcript viewer.
-- `app/src/main/java/com/example/TranscriptionHistoryScreen.kt`: Journal history UI, timeline grouping, search, batch deletion, and JSON export.
-- `app/src/main/java/com/example/ui/PlaybackScreen.kt`: Dedicated audio playback and review screen with interactive waveform touch scrubbing, timestamp jumping, and keyword search.
-- `app/src/main/java/com/example/ui/MainViewModel.kt`: Central state manager, Gemini streaming transcription logic, AI queries, and data coordination.
-- `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, and authentication.
+- `app/src/main/java/com/example/MainActivity.kt`: Primary entry activity, top-level navigation tabs (Transcribe, Journal, Speakers), audio picker, player, and transcript viewer.
+- `app/src/main/java/com/example/TranscriptionHistoryScreen.kt`: Journal history UI, timeline grouping, search, dynamic filter bar, batch deletion, speaker chips, and JSON export.
+- `app/src/main/java/com/example/ui/PlaybackScreen.kt`: Dedicated audio playback and review screen with interactive waveform touch scrubbing, timestamp jumping, speaker color badge styling, and Golden Sample assignment.
+- `app/src/main/java/com/example/ui/SpeakerManagementScreen.kt`: Known Speakers Directory, profile management, custom color picker, Golden Sample preview player, and modal speaker details dialog.
+- `app/src/main/java/com/example/ui/MainViewModel.kt`: Central state manager, Gemini streaming transcription logic, multimodal biometric prompt bundling, AI queries, speaker repository coordination, and data sync.
+- `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, Google Drive, and Known Speakers navigation link.
+- `app/src/main/java/com/example/util/AudioSliceExtractor.kt`: Audio segment extraction utility using MediaExtractor/MediaMuxer for verified Golden Sample biometric slices.
 - `app/src/main/java/com/example/api/GeminiApiService.kt`: Retrofit client interfaces, data transfer models, and network clients for Gemini, OpenRouter, and Groq.
-- `app/src/main/java/com/example/db/Transcription.kt`: Room Entity for audio transcriptions, speaker labels, and audio file paths.
-- `app/src/main/java/com/example/db/AppDatabase.kt`: Room database initialization and migration definitions.
+- `app/src/main/java/com/example/api/GoogleDriveApiService.kt`: Google Drive REST v3 API client interface, folder creation, search, file metadata patching, and multi-part media upload.
+- `app/src/main/java/com/example/db/Transcription.kt`: Room Entity for audio transcriptions, speaker labels, location, and audio file paths.
+- `app/src/main/java/com/example/db/SpeakerProfile.kt`: Room Entity for known speakers, color hex badges, recording statistics, and Golden Sample audio segment references.
+- `app/src/main/java/com/example/db/SpeakerDao.kt`: Data access object for speaker profile queries, upserts, deletion, and golden sample management.
+- `app/src/main/java/com/example/db/SpeakerRepository.kt`: Repository layer mediating between Room SpeakerDao and MainViewModel.
+- `app/src/main/java/com/example/db/AppDatabase.kt`: Room database initialization and V10 migration definitions.
 - `app/src/main/java/com/example/db/TranscriptionDao.kt`: Data access object for Room database queries and mutations.
 - `app/src/main/java/com/example/db/TranscriptionRepository.kt`: Repository layer mediating between Room DAO and the ViewModel.
 - `app/src/main/java/com/example/ui/theme/Color.kt`: M3 color definitions.

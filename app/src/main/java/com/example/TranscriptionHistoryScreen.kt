@@ -4,6 +4,7 @@ import androidx.compose.animation.*
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -18,6 +19,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.db.TranscriptionRecord
+import com.example.db.SpeakerProfile
+import com.example.ui.SpeakerDetailDialog
 import com.example.ui.UiState
 import com.example.ui.formatDuration
 import java.text.SimpleDateFormat
@@ -50,6 +53,16 @@ sealed class JournalEntry {
     }
 }
 
+/**
+ * Filter time buckets for dynamic journal history filtering.
+ */
+enum class DateBucketFilter(val label: String) {
+    ALL("All Time"),
+    TODAY("Today"),
+    PAST_7_DAYS("Past 7 Days"),
+    THIS_MONTH("This Month")
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TranscriptionHistoryScreen(
@@ -65,14 +78,26 @@ fun TranscriptionHistoryScreen(
     onSync: () -> Unit,
     defaultKeywords: List<String>,
     onOpenPlayback: (TranscriptionRecord) -> Unit,
+    onSaveSpeaker: ((SpeakerProfile) -> Unit)? = null,
+    onRemoveGoldenSample: ((String) -> Unit)? = null,
     audioPlayerContent: @Composable (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var selectedSpeakerFilter by remember { mutableStateOf<String?>(null) }
+    var selectedLocationFilter by remember { mutableStateOf<String?>(null) }
+    var selectedDateBucketFilter by remember { mutableStateOf(DateBucketFilter.ALL) }
+
     var isSelectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
     var expandedEntryIds by remember { mutableStateOf(setOf<String>()) }
     var expandedPartIds by remember { mutableStateOf(setOf<String>()) }
     var sessionToDelete by remember { mutableStateOf<JournalEntry.SessionGroup?>(null) }
+    var activeSpeakerForDialog by remember { mutableStateOf<String?>(null) }
+
+    val activeFilterCount = (if (selectedSpeakerFilter != null) 1 else 0) +
+            (if (selectedLocationFilter != null) 1 else 0) +
+            (if (selectedDateBucketFilter != DateBucketFilter.ALL) 1 else 0) +
+            (if (searchQuery.isNotBlank()) 1 else 0)
 
     val dateFormat = remember { SimpleDateFormat("MMM dd, yyyy • hh:mm a", Locale.getDefault()) }
     val dayFormat = remember { SimpleDateFormat("yyyyMMdd", Locale.getDefault()) }
@@ -117,28 +142,114 @@ fun TranscriptionHistoryScreen(
         (nonSession + sessionGroups).sortedByDescending { it.sortTimestamp }
     }
 
-    // Filter entries based on search query
-    val filteredEntries = journalEntries.filter { entry ->
-        val query = searchQuery.lowercase().trim()
-        if (query.isBlank()) return@filter true
-
-        when (entry) {
-            is JournalEntry.Single -> {
-                val dateStr = dateFormat.format(Date(entry.record.timestamp)).lowercase()
-                dateStr.contains(query) ||
-                        entry.record.transcription.lowercase().contains(query) ||
-                        (entry.record.summary?.lowercase()?.contains(query) == true) ||
-                        (entry.record.speakerLabels?.lowercase()?.contains(query) == true)
+    // Dynamic extraction of distinct speakers and locations for filter options
+    val availableSpeakers = remember(uiState.history, uiState.speakers) {
+        val list = mutableListOf<String>()
+        uiState.speakers.forEach { list.add(it.name) }
+        uiState.history.forEach { rec ->
+            rec.activeSpeakersCsv?.split(",")?.forEach { s ->
+                val trimmed = s.trim()
+                if (trimmed.isNotBlank()) list.add(trimmed)
             }
-            is JournalEntry.SessionGroup -> {
-                val dateStr = dateFormat.format(Date(entry.timestamp)).lowercase()
-                entry.sessionTitle.lowercase().contains(query) ||
-                        dateStr.contains(query) ||
-                        (entry.masterSummary?.lowercase()?.contains(query) == true) ||
-                        entry.parts.any { p ->
-                            p.transcription.lowercase().contains(query) ||
-                                    (p.speakerLabels?.lowercase()?.contains(query) == true)
-                        }
+            rec.speakerLabels?.split(",")?.forEach { s ->
+                val trimmed = s.trim()
+                if (trimmed.isNotBlank() && !trimmed.startsWith("Speaker ", ignoreCase = true)) list.add(trimmed)
+            }
+        }
+        list.distinct().sorted()
+    }
+
+    val availableLocations = remember(uiState.history) {
+        val list = mutableListOf<String>()
+        uiState.history.forEach { rec ->
+            val loc = rec.locationName?.trim()
+            if (!loc.isNullOrBlank()) list.add(loc)
+        }
+        list.distinct().sorted()
+    }
+
+    // Filter entries based on search query, speaker, location, and date bucket
+    val filteredEntries = journalEntries.filter { entry ->
+        // 1. Search Query Filter
+        val query = searchQuery.lowercase().trim()
+        val matchesQuery = if (query.isBlank()) true else {
+            when (entry) {
+                is JournalEntry.Single -> {
+                    val dateStr = dateFormat.format(Date(entry.record.timestamp)).lowercase()
+                    dateStr.contains(query) ||
+                            entry.record.transcription.lowercase().contains(query) ||
+                            (entry.record.summary?.lowercase()?.contains(query) == true) ||
+                            (entry.record.speakerLabels?.lowercase()?.contains(query) == true) ||
+                            (entry.record.locationName?.lowercase()?.contains(query) == true) ||
+                            (entry.record.activeSpeakersCsv?.lowercase()?.contains(query) == true) ||
+                            (entry.record.mentionedPeopleCsv?.lowercase()?.contains(query) == true)
+                }
+                is JournalEntry.SessionGroup -> {
+                    val dateStr = dateFormat.format(Date(entry.timestamp)).lowercase()
+                    entry.sessionTitle.lowercase().contains(query) ||
+                            dateStr.contains(query) ||
+                            (entry.masterSummary?.lowercase()?.contains(query) == true) ||
+                            entry.parts.any { p ->
+                                p.transcription.lowercase().contains(query) ||
+                                        (p.speakerLabels?.lowercase()?.contains(query) == true) ||
+                                        (p.locationName?.lowercase()?.contains(query) == true) ||
+                                        (p.activeSpeakersCsv?.lowercase()?.contains(query) == true) ||
+                                        (p.mentionedPeopleCsv?.lowercase()?.contains(query) == true)
+                            }
+                }
+            }
+        }
+        if (!matchesQuery) return@filter false
+
+        // 2. Specific Speaker Filter
+        if (selectedSpeakerFilter != null) {
+            val spk = selectedSpeakerFilter!!.lowercase().trim()
+            val matchesSpeaker = when (entry) {
+                is JournalEntry.Single -> {
+                    (entry.record.activeSpeakersCsv?.lowercase()?.contains(spk) == true) ||
+                            (entry.record.speakerLabels?.lowercase()?.contains(spk) == true) ||
+                            (entry.record.transcription.lowercase().contains(spk))
+                }
+                is JournalEntry.SessionGroup -> {
+                    entry.parts.any { p ->
+                        (p.activeSpeakersCsv?.lowercase()?.contains(spk) == true) ||
+                                (p.speakerLabels?.lowercase()?.contains(spk) == true) ||
+                                (p.transcription.lowercase().contains(spk))
+                    }
+                }
+            }
+            if (!matchesSpeaker) return@filter false
+        }
+
+        // 3. Location Filter
+        if (selectedLocationFilter != null) {
+            val loc = selectedLocationFilter!!.lowercase().trim()
+            val matchesLocation = when (entry) {
+                is JournalEntry.Single -> {
+                    entry.record.locationName?.lowercase()?.contains(loc) == true
+                }
+                is JournalEntry.SessionGroup -> {
+                    entry.parts.any { p -> p.locationName?.lowercase()?.contains(loc) == true }
+                }
+            }
+            if (!matchesLocation) return@filter false
+        }
+
+        // 4. Date Range / Time Bucket Filter
+        when (selectedDateBucketFilter) {
+            DateBucketFilter.ALL -> true
+            DateBucketFilter.TODAY -> {
+                val recordDay = dayFormat.format(Date(entry.sortTimestamp))
+                recordDay == todayStr
+            }
+            DateBucketFilter.PAST_7_DAYS -> {
+                System.currentTimeMillis() - entry.sortTimestamp <= 7 * 86400000L
+            }
+            DateBucketFilter.THIS_MONTH -> {
+                val nowCal = Calendar.getInstance()
+                val entryCal = Calendar.getInstance().apply { timeInMillis = entry.sortTimestamp }
+                nowCal.get(Calendar.YEAR) == entryCal.get(Calendar.YEAR) &&
+                        nowCal.get(Calendar.MONTH) == entryCal.get(Calendar.MONTH)
             }
         }
     }
@@ -283,6 +394,239 @@ fun TranscriptionHistoryScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Spacer(modifier = Modifier.height(4.dp))
+
+            // Dynamic Journal Filtering Bar (Above Search Bar)
+            LazyRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Clear Filters badge button if active
+                if (activeFilterCount > 0) {
+                    item(key = "clear_filters") {
+                        FilterChip(
+                            selected = true,
+                            onClick = {
+                                selectedSpeakerFilter = null
+                                selectedLocationFilter = null
+                                selectedDateBucketFilter = DateBucketFilter.ALL
+                                searchQuery = ""
+                            },
+                            label = {
+                                Text("Clear ($activeFilterCount)", fontWeight = FontWeight.Bold)
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Close,
+                                    contentDescription = "Clear all filters",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.errorContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onErrorContainer,
+                                selectedLeadingIconColor = MaterialTheme.colorScheme.onErrorContainer
+                            )
+                        )
+                    }
+                }
+
+                // Date Range / Time Bucket Filter
+                item(key = "date_filter") {
+                    var showDateMenu by remember { mutableStateOf(false) }
+                    Box {
+                        FilterChip(
+                            selected = selectedDateBucketFilter != DateBucketFilter.ALL,
+                            onClick = { showDateMenu = true },
+                            label = { Text(selectedDateBucketFilter.label) },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.DateRange,
+                                    contentDescription = "Date filter",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                if (selectedDateBucketFilter != DateBucketFilter.ALL) {
+                                    IconButton(
+                                        onClick = { selectedDateBucketFilter = DateBucketFilter.ALL },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Clear date filter",
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                } else {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        )
+                        DropdownMenu(
+                            expanded = showDateMenu,
+                            onDismissRequest = { showDateMenu = false }
+                        ) {
+                            DateBucketFilter.values().forEach { bucket ->
+                                DropdownMenuItem(
+                                    text = { Text(bucket.label) },
+                                    onClick = {
+                                        selectedDateBucketFilter = bucket
+                                        showDateMenu = false
+                                    },
+                                    leadingIcon = if (selectedDateBucketFilter == bucket) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Specific Speaker Filter
+                item(key = "speaker_filter") {
+                    var showSpeakerMenu by remember { mutableStateOf(false) }
+                    Box {
+                        FilterChip(
+                            selected = selectedSpeakerFilter != null,
+                            onClick = { showSpeakerMenu = true },
+                            label = {
+                                Text(selectedSpeakerFilter ?: "Speaker")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Person,
+                                    contentDescription = "Speaker filter",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                if (selectedSpeakerFilter != null) {
+                                    IconButton(
+                                        onClick = { selectedSpeakerFilter = null },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Clear speaker filter",
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                } else {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        )
+                        DropdownMenu(
+                            expanded = showSpeakerMenu,
+                            onDismissRequest = { showSpeakerMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("All Speakers") },
+                                onClick = {
+                                    selectedSpeakerFilter = null
+                                    showSpeakerMenu = false
+                                }
+                            )
+                            availableSpeakers.forEach { spkName ->
+                                DropdownMenuItem(
+                                    text = { Text(spkName) },
+                                    onClick = {
+                                        selectedSpeakerFilter = spkName
+                                        showSpeakerMenu = false
+                                    },
+                                    leadingIcon = if (selectedSpeakerFilter == spkName) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Location Filter
+                item(key = "location_filter") {
+                    var showLocationMenu by remember { mutableStateOf(false) }
+                    Box {
+                        FilterChip(
+                            selected = selectedLocationFilter != null,
+                            onClick = { showLocationMenu = true },
+                            label = {
+                                Text(selectedLocationFilter ?: "Location")
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Default.Place,
+                                    contentDescription = "Location filter",
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            },
+                            trailingIcon = {
+                                if (selectedLocationFilter != null) {
+                                    IconButton(
+                                        onClick = { selectedLocationFilter = null },
+                                        modifier = Modifier.size(18.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = "Clear location filter",
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                    }
+                                } else {
+                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null, modifier = Modifier.size(16.dp))
+                                }
+                            }
+                        )
+                        DropdownMenu(
+                            expanded = showLocationMenu,
+                            onDismissRequest = { showLocationMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("All Locations") },
+                                onClick = {
+                                    selectedLocationFilter = null
+                                    showLocationMenu = false
+                                }
+                            )
+                            availableLocations.forEach { locName ->
+                                DropdownMenuItem(
+                                    text = { Text(locName) },
+                                    onClick = {
+                                        selectedLocationFilter = locName
+                                        showLocationMenu = false
+                                    },
+                                    leadingIcon = if (selectedLocationFilter == locName) {
+                                        { Icon(Icons.Default.Check, contentDescription = null) }
+                                    } else null
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Quick Suggestion Chips for top speakers
+                if (selectedSpeakerFilter == null && availableSpeakers.isNotEmpty()) {
+                    items(availableSpeakers.take(3), key = { "quick_spk_$it" }) { spk ->
+                        SuggestionChip(
+                            onClick = { selectedSpeakerFilter = spk },
+                            label = { Text("👤 $spk") },
+                            modifier = Modifier.height(32.dp)
+                        )
+                    }
+                }
+
+                // Quick Suggestion Chips for top locations
+                if (selectedLocationFilter == null && availableLocations.isNotEmpty()) {
+                    items(availableLocations.take(2), key = { "quick_loc_$it" }) { loc ->
+                        SuggestionChip(
+                            onClick = { selectedLocationFilter = loc },
+                            label = { Text("📍 $loc") },
+                            modifier = Modifier.height(32.dp)
+                        )
+                    }
+                }
+            }
 
             // Search Bar Optimized for Mobile Thumb Reach
             OutlinedTextField(
@@ -435,6 +779,8 @@ fun TranscriptionHistoryScreen(
                                             onExportSessionJson(entry.sessionId, entry.sessionTitle, entry.parts)
                                         },
                                         onDeleteSession = { sessionToDelete = entry },
+                                        speakers = uiState.speakers,
+                                        onSpeakerClick = { activeSpeakerForDialog = it },
                                         audioPlayerContent = audioPlayerContent
                                     )
                                 }
@@ -467,6 +813,8 @@ fun TranscriptionHistoryScreen(
                                         onUpdateSpeakerName = { name -> onUpdateSpeakerName(record, name) },
                                         onOpenPlayback = { onOpenPlayback(record) },
                                         onExportJson = { onExportJson(record) },
+                                        speakers = uiState.speakers,
+                                        onSpeakerClick = { activeSpeakerForDialog = it },
                                         audioPlayerContent = audioPlayerContent
                                     )
                                 }
@@ -476,6 +824,27 @@ fun TranscriptionHistoryScreen(
                 }
             }
         }
+    }
+
+    // Modal Speaker Detail Dialog when any speaker chip is tapped
+    if (activeSpeakerForDialog != null) {
+        val spkName = activeSpeakerForDialog!!
+        val matchedProfile = uiState.speakers.find { it.name.equals(spkName, ignoreCase = true) }
+        SpeakerDetailDialog(
+            speaker = matchedProfile,
+            unrecognizedName = if (matchedProfile == null) spkName else null,
+            onDismiss = { activeSpeakerForDialog = null },
+            onSaveNewSpeaker = { newProfile ->
+                onSaveSpeaker?.invoke(newProfile)
+                activeSpeakerForDialog = null
+            },
+            onRemoveGoldenSample = { speakerId ->
+                onRemoveGoldenSample?.invoke(speakerId)
+            },
+            onFilterBySpeaker = { filterName ->
+                selectedSpeakerFilter = filterName
+            }
+        )
     }
 }
 
@@ -498,6 +867,8 @@ fun MasterSessionCard(
     onPlayPart: (TranscriptionRecord) -> Unit,
     onExportSession: () -> Unit,
     onDeleteSession: () -> Unit,
+    speakers: List<SpeakerProfile> = emptyList(),
+    onSpeakerClick: (String) -> Unit = {},
     audioPlayerContent: @Composable (String) -> Unit
 ) {
     Card(
@@ -711,6 +1082,73 @@ fun MasterSessionCard(
                 }
             }
 
+            // Session Speakers Active Roster Chips
+            val sessionSpeakers = remember(session.parts) {
+                session.parts.flatMap { part ->
+                    val list = mutableListOf<String>()
+                    val actCsv = part.activeSpeakersCsv
+                    val spk = part.speakerName
+                    if (!actCsv.isNullOrBlank()) {
+                        list.addAll(actCsv.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                    } else if (!spk.isNullOrBlank()) {
+                        list.add(spk.trim())
+                    }
+                    list
+                }.distinct()
+            }
+
+            if (sessionSpeakers.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.RecordVoiceOver,
+                        contentDescription = "Speakers",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(15.dp)
+                    )
+                    Text(
+                        text = "Speakers:",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(sessionSpeakers) { spkName ->
+                            val matchedProfile = speakers.find { it.name.equals(spkName, ignoreCase = true) }
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                modifier = Modifier.clickable { onSpeakerClick(spkName) }
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    if (matchedProfile?.hasGoldenSample == true) {
+                                        Icon(
+                                            imageVector = Icons.Default.Verified,
+                                            contentDescription = "Verified Golden Clip",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(12.dp)
+                                        )
+                                    }
+                                    Text(
+                                        text = spkName,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Collapsible Detailed Section (Parts Sequence & Actions)
             AnimatedVisibility(
                 visible = isExpanded,
@@ -909,6 +1347,8 @@ fun SingleRecordingCard(
     onUpdateSpeakerName: (String) -> Unit,
     onOpenPlayback: () -> Unit,
     onExportJson: () -> Unit,
+    speakers: List<SpeakerProfile> = emptyList(),
+    onSpeakerClick: (String) -> Unit = {},
     audioPlayerContent: @Composable (String) -> Unit
 ) {
     var editSpeakerMode by remember { mutableStateOf(false) }
@@ -989,6 +1429,137 @@ fun SingleRecordingCard(
                                 fontWeight = FontWeight.Bold,
                                 color = MaterialTheme.colorScheme.primary
                             )
+                        }
+                        if (!record.locationName.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Place,
+                                    contentDescription = "Location",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = record.locationName,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+
+                        if (!record.diarizationConfidence.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            val conf = record.diarizationConfidence!!
+                            val confColor = when {
+                                conf.contains("High", true) -> MaterialTheme.colorScheme.primary
+                                conf.contains("Med", true) -> MaterialTheme.colorScheme.tertiary
+                                else -> MaterialTheme.colorScheme.error
+                            }
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (conf.contains("High", true)) Icons.Default.Verified else Icons.Default.Warning,
+                                    contentDescription = "Confidence",
+                                    tint = confColor,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Confidence: $conf",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = confColor
+                                )
+                            }
+                        }
+
+                        // Interactive Speakers Chips
+                        val singleSpeakerList = remember(record.activeSpeakersCsv, record.speakerName) {
+                            val list = mutableListOf<String>()
+                            val actCsv = record.activeSpeakersCsv
+                            val spk = record.speakerName
+                            if (!actCsv.isNullOrBlank()) {
+                                list.addAll(actCsv.split(",").map { it.trim() }.filter { it.isNotBlank() })
+                            } else if (!spk.isNullOrBlank()) {
+                                list.add(spk.trim())
+                            }
+                            list.distinct()
+                        }
+
+                        if (singleSpeakerList.isNotEmpty()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.RecordVoiceOver,
+                                    contentDescription = "Speakers",
+                                    tint = MaterialTheme.colorScheme.secondary,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Speakers:",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    items(singleSpeakerList) { spkName ->
+                                        val matchedProfile = speakers.find { it.name.equals(spkName, ignoreCase = true) }
+                                        Surface(
+                                            shape = RoundedCornerShape(6.dp),
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f),
+                                            modifier = Modifier.clickable { onSpeakerClick(spkName) }
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                            ) {
+                                                if (matchedProfile?.hasGoldenSample == true) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Verified,
+                                                        contentDescription = "Verified Golden Clip",
+                                                        tint = MaterialTheme.colorScheme.secondary,
+                                                        modifier = Modifier.size(11.dp)
+                                                    )
+                                                }
+                                                Text(
+                                                    text = spkName,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if (!record.mentionedPeopleCsv.isNullOrBlank()) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Person,
+                                    contentDescription = "Mentions",
+                                    tint = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Text(
+                                    text = "Mentions: ${record.mentionedPeopleCsv}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }

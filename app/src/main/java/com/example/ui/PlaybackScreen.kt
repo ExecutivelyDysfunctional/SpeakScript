@@ -46,7 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.db.TranscriptionRecord
+import com.example.db.SpeakerProfile
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlin.random.Random
@@ -290,6 +292,10 @@ fun InteractiveWaveformVisualizer(
     isScrubbing: Boolean,
     scrubFraction: Float,
     partCutFractions: List<Float> = emptyList(),
+    isClippingMode: Boolean = false,
+    clipStartFraction: Float = 0f,
+    clipEndFraction: Float = 1f,
+    onClipBoundsChange: ((Float, Float) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -311,23 +317,57 @@ fun InteractiveWaveformVisualizer(
                     onSeek(fraction)
                 }
             }
-            .pointerInput(Unit) {
+            .pointerInput(isClippingMode, clipStartFraction, clipEndFraction, progress, isScrubbing, scrubFraction) {
+                var activeHandle = 0 // 0 = none, 1 = start, 2 = end, 3 = playhead/scrub
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
                         val fraction = (offset.x / size.width).coerceIn(0f, 1f)
-                        onScrubbingChange(true, fraction)
+                        if (isClippingMode) {
+                            val distStart = kotlin.math.abs(fraction - clipStartFraction)
+                            val distEnd = kotlin.math.abs(fraction - clipEndFraction)
+                            val threshold = 0.08f // 8% of width touch zone
+                            if (distStart < threshold && distStart < distEnd) {
+                                activeHandle = 1
+                            } else if (distEnd < threshold) {
+                                activeHandle = 2
+                            } else {
+                                activeHandle = 3
+                                onScrubbingChange(true, fraction)
+                            }
+                        } else {
+                            activeHandle = 3
+                            onScrubbingChange(true, fraction)
+                        }
                     },
                     onDragEnd = {
-                        onScrubbingChange(false, displayProgress)
-                        onSeek(displayProgress)
+                        if (activeHandle == 3) {
+                            onScrubbingChange(false, displayProgress)
+                            onSeek(displayProgress)
+                        }
+                        activeHandle = 0
                     },
                     onDragCancel = {
-                        onScrubbingChange(false, progress)
+                        if (activeHandle == 3) {
+                            onScrubbingChange(false, progress)
+                        }
+                        activeHandle = 0
                     },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
                         val fraction = (change.position.x / size.width).coerceIn(0f, 1f)
-                        onScrubbingChange(true, fraction)
+                        if (isClippingMode) {
+                            if (activeHandle == 1) {
+                                val newStart = fraction.coerceIn(0f, clipEndFraction - 0.03f)
+                                onClipBoundsChange?.invoke(newStart, clipEndFraction)
+                            } else if (activeHandle == 2) {
+                                val newEnd = fraction.coerceIn(clipStartFraction + 0.03f, 1f)
+                                onClipBoundsChange?.invoke(clipStartFraction, newEnd)
+                            } else if (activeHandle == 3) {
+                                onScrubbingChange(true, fraction)
+                            }
+                        } else {
+                            onScrubbingChange(true, fraction)
+                        }
                     }
                 )
             }
@@ -348,12 +388,24 @@ fun InteractiveWaveformVisualizer(
                 val x = i * barWidth + gap / 2
                 val y = (size.height - barHeight) / 2
 
-                val isPlayed = (x + actualBarWidth / 2) <= scrubberX
-                val barColor = if (isPlayed) {
-                    val progressRatio = (i.toFloat() / totalBars).coerceIn(0f, 1f)
-                    androidx.compose.ui.graphics.lerp(primaryColor, secondaryColor, progressRatio * 0.5f)
+                val barMiddleX = x + actualBarWidth / 2
+                val barFraction = barMiddleX / size.width
+
+                val isPlayed = barMiddleX <= scrubberX
+                val barColor = if (isClippingMode) {
+                    val inClipRange = barFraction in clipStartFraction..clipEndFraction
+                    if (inClipRange) {
+                        if (isPlayed) primaryColor else secondaryColor
+                    } else {
+                        surfaceVariantColor.copy(alpha = 0.35f)
+                    }
                 } else {
-                    surfaceVariantColor
+                    if (isPlayed) {
+                        val progressRatio = (i.toFloat() / totalBars).coerceIn(0f, 1f)
+                        androidx.compose.ui.graphics.lerp(primaryColor, secondaryColor, progressRatio * 0.5f)
+                    } else {
+                        surfaceVariantColor
+                    }
                 }
 
                 drawRoundRect(
@@ -375,7 +427,57 @@ fun InteractiveWaveformVisualizer(
                 )
             }
 
-            // Draw Playhead Cursor
+            if (isClippingMode) {
+                val startX = clipStartFraction * size.width
+                val endX = clipEndFraction * size.width
+
+                // Tint the selected range background lightly
+                drawRect(
+                    color = primaryColor.copy(alpha = 0.08f),
+                    topLeft = Offset(startX, 0f),
+                    size = Size(endX - startX, size.height)
+                )
+
+                // Draw start handle line
+                drawLine(
+                    color = markerColor,
+                    start = Offset(startX, 0f),
+                    end = Offset(startX, size.height),
+                    strokeWidth = 3.dp.toPx()
+                )
+                // Start handle thumb
+                drawCircle(
+                    color = markerColor,
+                    radius = 7.dp.toPx(),
+                    center = Offset(startX, size.height / 2)
+                )
+                drawRect(
+                    color = Color.White,
+                    topLeft = Offset(startX - 1.dp.toPx(), size.height / 2 - 4.dp.toPx()),
+                    size = Size(2.dp.toPx(), 8.dp.toPx())
+                )
+
+                // Draw end handle line
+                drawLine(
+                    color = markerColor,
+                    start = Offset(endX, 0f),
+                    end = Offset(endX, size.height),
+                    strokeWidth = 3.dp.toPx()
+                )
+                // End handle thumb
+                drawCircle(
+                    color = markerColor,
+                    radius = 7.dp.toPx(),
+                    center = Offset(endX, size.height / 2)
+                )
+                drawRect(
+                    color = Color.White,
+                    topLeft = Offset(endX - 1.dp.toPx(), size.height / 2 - 4.dp.toPx()),
+                    size = Size(2.dp.toPx(), 8.dp.toPx())
+                )
+            }
+
+            // Draw Playhead Cursor (only if not clipping or playhead is in bounds)
             val playheadX = scrubberX.coerceIn(0f, size.width)
             drawLine(
                 color = primaryColor,
@@ -404,11 +506,24 @@ fun InteractiveWaveformVisualizer(
 fun PlaybackScreen(
     record: TranscriptionRecord,
     sessionParts: List<TranscriptionRecord> = emptyList(),
+    speakers: List<SpeakerProfile> = emptyList(),
+    onAssignGoldenSample: ((speakerId: String, audioUri: String, startMs: Int, endMs: Int, recordingTitle: String) -> Unit)? = null,
+    onSaveNewSpeaker: ((SpeakerProfile) -> Unit)? = null,
+    onGetDriveStreamInfo: (suspend (String) -> Pair<String, Map<String, String>>?)? = null,
+    onUpdateConfidenceAndSpeakers: ((recordId: String, newSpeakers: String, newConfidence: String) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val dateFormat = remember { SimpleDateFormat("MMMM dd, yyyy • hh:mm a", Locale.getDefault()) }
+    var candidateGoldenLine by remember { mutableStateOf<CumulativeTranscriptLine?>(null) }
+    var showVerifyConfidenceDialog by remember { mutableStateOf(false) }
+
+    var isClippingMode by remember { mutableStateOf(false) }
+    var clippingLine by remember { mutableStateOf<CumulativeTranscriptLine?>(null) }
+    var clipStartFraction by remember { mutableFloatStateOf(0f) }
+    var clipEndFraction by remember { mutableFloatStateOf(1f) }
 
     // Normalize parts list (if single record, create list of 1)
     val orderedParts = remember(record, sessionParts) {
@@ -549,12 +664,109 @@ fun PlaybackScreen(
 
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
 
-    // Core Gapless Player Initializer
+    // Core Gapless Player Initializer with Google Drive streaming support
     fun initPlayerForPart(partIdx: Int, autoPlay: Boolean = false, startPosMs: Int = 0) {
         val targetPart = orderedParts.getOrNull(partIdx)
         if (targetPart == null) return
 
         val uriStr = targetPart.audioUri
+        val driveId = targetPart.driveFileId
+
+        var localFileExists = false
+        if (!uriStr.isNullOrBlank()) {
+            try {
+                val parsedUri = Uri.parse(uriStr)
+                if (parsedUri.scheme == "file") {
+                    val path = parsedUri.path
+                    if (path != null) {
+                        val file = java.io.File(path)
+                        localFileExists = file.exists()
+                    }
+                } else {
+                    localFileExists = true
+                }
+            } catch (e: java.lang.Exception) {
+                // Ignore
+            }
+        }
+
+        if (!localFileExists && !driveId.isNullOrBlank() && onGetDriveStreamInfo != null) {
+            isPlaying = false
+            hasAudioError = false
+            audioErrorMessage = "Streaming audio from Google Drive..."
+            scope.launch {
+                val streamInfo = onGetDriveStreamInfo(driveId)
+                if (streamInfo != null) {
+                    val (streamUrl, headers) = streamInfo
+                    try {
+                        mediaPlayer?.release()
+                        val player = MediaPlayer()
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
+                            player.setDataSource(context, Uri.parse(streamUrl), headers)
+                        } else {
+                            player.setDataSource(streamUrl)
+                        }
+                        player.setOnPreparedListener { mp ->
+                            val actualDur = mp.duration
+                            if (actualDur > 0) {
+                                partDurationsMap[partIdx] = actualDur
+                            }
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                try {
+                                    mp.playbackParams = mp.playbackParams.setSpeed(playbackSpeed)
+                                } catch (e: Exception) {}
+                            }
+                            if (startPosMs > 0) {
+                                mp.seekTo(startPosMs.coerceIn(0, actualDur))
+                            }
+                            if (autoPlay) {
+                                mp.start()
+                                isPlaying = true
+                            }
+                            hasAudioError = false
+                            audioErrorMessage = null
+                        }
+
+                        player.setOnCompletionListener {
+                            if (partIdx < orderedParts.size - 1) {
+                                val nextIdx = partIdx + 1
+                                currentPartIndex = nextIdx
+                                currentPartPositionMs = 0
+                                initPlayerForPart(nextIdx, autoPlay = true, startPosMs = 0)
+                                Toast.makeText(
+                                    context,
+                                    "Advancing seamlessly to Part ${nextIdx + 1} of ${orderedParts.size}",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                isPlaying = false
+                                currentPartPositionMs = partDurationsMap[partIdx] ?: 0
+                            }
+                        }
+
+                        player.setOnErrorListener { _, what, extra ->
+                            hasAudioError = true
+                            audioErrorMessage = "Drive Playback error ($what, $extra)"
+                            isPlaying = false
+                            false
+                        }
+
+                        player.prepareAsync()
+                        mediaPlayer = player
+                    } catch (e: Exception) {
+                        hasAudioError = true
+                        audioErrorMessage = "Drive stream failed: ${e.message}"
+                        isPlaying = false
+                    }
+                } else {
+                    hasAudioError = true
+                    audioErrorMessage = "Failed to load Google Drive stream."
+                    isPlaying = false
+                }
+            }
+            return
+        }
+
         if (uriStr.isNullOrBlank()) {
             hasAudioError = true
             audioErrorMessage = "No audio recording file found for Part ${(targetPart.partIndex ?: partIdx) + 1}."
@@ -624,6 +836,7 @@ fun PlaybackScreen(
             mediaPlayer = null
         }
     }
+
 
     // Auto-init on initial composition or part index change
     LaunchedEffect(currentPartIndex) {
@@ -930,6 +1143,39 @@ fun PlaybackScreen(
                                     modifier = Modifier.height(24.dp)
                                 )
                             }
+
+                            // Diarization Confidence Badge
+                            currentPartRecord.diarizationConfidence?.takeIf { it.isNotBlank() }?.let { conf ->
+                                val confColor = when {
+                                    conf.contains("High", true) -> MaterialTheme.colorScheme.primary
+                                    conf.contains("Med", true) -> MaterialTheme.colorScheme.tertiary
+                                    else -> MaterialTheme.colorScheme.error
+                                }
+                                SuggestionChip(
+                                    onClick = { showVerifyConfidenceDialog = true },
+                                    icon = {
+                                        Icon(
+                                            imageVector = if (conf.contains("High", true)) Icons.Default.Verified else Icons.Default.Warning,
+                                            contentDescription = "Verify or Correct Speaker Labels",
+                                            modifier = Modifier.size(14.dp),
+                                            tint = confColor
+                                        )
+                                    },
+                                    label = {
+                                        Text(
+                                            text = "Conf: $conf (Verify/Correct)",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = confColor
+                                        )
+                                    },
+                                    colors = SuggestionChipDefaults.suggestionChipColors(
+                                        containerColor = confColor.copy(alpha = 0.15f)
+                                    ),
+                                    border = null,
+                                    modifier = Modifier.height(24.dp)
+                                )
+                            }
                         }
 
                         // Multi-Part Interactive Sequence Selector Pills
@@ -1018,8 +1264,125 @@ fun PlaybackScreen(
                                         scrubFraction = fraction
                                     },
                                     isScrubbing = isScrubbing,
-                                    scrubFraction = scrubFraction
+                                    scrubFraction = scrubFraction,
+                                    isClippingMode = isClippingMode,
+                                    clipStartFraction = clipStartFraction,
+                                    clipEndFraction = clipEndFraction,
+                                    onClipBoundsChange = { startFrac, endFrac ->
+                                        clipStartFraction = startFrac
+                                        clipEndFraction = endFrac
+                                    }
                                 )
+
+                                if (isClippingMode) {
+                                    Card(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                                        ),
+                                        shape = MaterialTheme.shapes.medium,
+                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp),
+                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.ContentCut,
+                                                        contentDescription = null,
+                                                        tint = MaterialTheme.colorScheme.tertiary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                    Text(
+                                                        text = "Golden Sample Bounds Editor",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
+                                                IconButton(
+                                                    onClick = { isClippingMode = false },
+                                                    modifier = Modifier.size(24.dp)
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Close,
+                                                        contentDescription = "Cancel Editing",
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                }
+                                            }
+
+                                            val activeStartMs = (clipStartFraction * totalCumulativeDurationMs).toInt()
+                                            val activeEndMs = (clipEndFraction * totalCumulativeDurationMs).toInt()
+                                            val activeDurationMs = activeEndMs - activeStartMs
+
+                                            Text(
+                                                text = "Drag handles on waveform to trim. Clip: ${formatDuration(activeStartMs)} - ${formatDuration(activeEndMs)} (${activeDurationMs / 1000}s)",
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                TextButton(
+                                                    onClick = { isClippingMode = false },
+                                                    colors = ButtonDefaults.textButtonColors(
+                                                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                                                    )
+                                                ) {
+                                                    Text("Cancel")
+                                                }
+                                                Button(
+                                                    onClick = {
+                                                        clippingLine?.let { originalLine ->
+                                                            val partIdx = originalLine.partIndex
+                                                            val partOffset = cumulativeOffsets.getOrElse(partIdx) { 0 }
+                                                            val partDur = partDurationsMap[partIdx] ?: 5000
+
+                                                            val globalStartMs = (clipStartFraction * totalCumulativeDurationMs).toInt()
+                                                            val globalEndMs = (clipEndFraction * totalCumulativeDurationMs).toInt()
+
+                                                            val localStartMs = (globalStartMs - partOffset).coerceIn(0, partDur)
+                                                            val localEndMs = (globalEndMs - partOffset).coerceIn(localStartMs + 500, partDur)
+
+                                                            val updatedLine = originalLine.copy(
+                                                                localStartMs = localStartMs,
+                                                                localEndMs = localEndMs,
+                                                                globalStartMs = globalStartMs,
+                                                                globalEndMs = globalEndMs
+                                                            )
+                                                            candidateGoldenLine = updatedLine
+                                                        }
+                                                        isClippingMode = false
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = MaterialTheme.colorScheme.tertiary,
+                                                        contentColor = MaterialTheme.colorScheme.onTertiary
+                                                    )
+                                                ) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Text("Select Speaker")
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
 
                                 // Global Time & Scrub Feedback
                                 Row(
@@ -1569,14 +1932,52 @@ fun PlaybackScreen(
                                             }
                                         }
 
-                                        // Speaker tag
-                                        line.speaker?.let { speakerName ->
-                                            Text(
-                                                text = speakerName,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isCurrentLine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
-                                            )
+                                        // Speaker tag & Golden Sample bookmark
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                        ) {
+                                            line.speaker?.let { speakerName ->
+                                                Text(
+                                                    text = speakerName,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = if (isCurrentLine) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary
+                                                )
+                                            }
+
+                                            val partAudioPath = orderedParts.getOrNull(line.partIndex)?.audioFilePath ?: record.audioFilePath
+                                            if (!partAudioPath.isNullOrBlank() && onAssignGoldenSample != null) {
+                                                Surface(
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.7f),
+                                                    modifier = Modifier.clickable {
+                                                        clippingLine = line
+                                                        clipStartFraction = line.globalStartMs.toFloat() / totalCumulativeDurationMs.toFloat()
+                                                        clipEndFraction = line.globalEndMs.toFloat() / totalCumulativeDurationMs.toFloat()
+                                                        isClippingMode = true
+                                                    }
+                                                ) {
+                                                    Row(
+                                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                        verticalAlignment = Alignment.CenterVertically,
+                                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
+                                                    ) {
+                                                        Icon(
+                                                            imageVector = Icons.Default.Verified,
+                                                            contentDescription = "Tag as Golden Sample",
+                                                            tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                                            modifier = Modifier.size(12.dp)
+                                                        )
+                                                        Text(
+                                                            text = "Golden Clip",
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onTertiaryContainer
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
 
@@ -1637,4 +2038,341 @@ fun PlaybackScreen(
             }
         }
     }
+
+    if (showVerifyConfidenceDialog) {
+        var editedSpeakers by remember(currentPartRecord) { mutableStateOf(currentPartRecord.activeSpeakersCsv ?: currentPartRecord.speakerLabels ?: "") }
+        var selectedConfidence by remember(currentPartRecord) { mutableStateOf(currentPartRecord.diarizationConfidence ?: "High") }
+
+        AlertDialog(
+            onDismissRequest = { showVerifyConfidenceDialog = false },
+            title = { Text("Verify Diarization Labels") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        text = "Manually verify or correct the detected speakers and diarization confidence score for this audio part.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    OutlinedTextField(
+                        value = editedSpeakers,
+                        onValueChange = { editedSpeakers = it },
+                        label = { Text("Active Speakers (comma-separated)") },
+                        placeholder = { Text("e.g. Austin Grindy, Speaker A") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        text = "Diarization Confidence Level",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        listOf("High", "Medium", "Low").forEach { level ->
+                            val isSelected = selectedConfidence.contains(level, true)
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { selectedConfidence = level },
+                                label = { Text(level) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onUpdateConfidenceAndSpeakers?.invoke(
+                            currentPartRecord.id,
+                            editedSpeakers.trim(),
+                            selectedConfidence
+                        )
+                        showVerifyConfidenceDialog = false
+                    }
+                ) {
+                    Text("Verify & Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showVerifyConfidenceDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    // Modal dialog to designate candidate line as a Golden Reference Audio Sample
+    if (candidateGoldenLine != null) {
+        val line = candidateGoldenLine!!
+        val audioPath = orderedParts.getOrNull(line.partIndex)?.audioFilePath ?: record.audioFilePath ?: ""
+        AssignGoldenSampleDialog(
+            line = line,
+            audioUri = audioPath,
+            recordingTitle = sessionTitle,
+            speakers = speakers,
+            onDismiss = { candidateGoldenLine = null },
+            onAssign = { speakerId ->
+                onAssignGoldenSample?.invoke(
+                    speakerId,
+                    audioPath,
+                    line.localStartMs,
+                    line.localEndMs,
+                    sessionTitle
+                )
+                candidateGoldenLine = null
+            },
+            onCreateNewSpeaker = { name ->
+                val newProfile = SpeakerProfile(
+                    name = name,
+                    goldenSampleAudioUri = audioPath,
+                    goldenSampleStartMs = line.localStartMs,
+                    goldenSampleEndMs = line.localEndMs,
+                    goldenSampleRecordingTitle = sessionTitle
+                )
+                onSaveNewSpeaker?.invoke(newProfile)
+                candidateGoldenLine = null
+            }
+        )
+    }
+}
+
+/**
+ * Dialog for selecting/creating a Speaker Profile to assign a designated Golden Audio Reference clip.
+ */
+@Composable
+fun AssignGoldenSampleDialog(
+    line: CumulativeTranscriptLine,
+    audioUri: String,
+    recordingTitle: String,
+    speakers: List<SpeakerProfile>,
+    onDismiss: () -> Unit,
+    onAssign: (speakerId: String) -> Unit,
+    onCreateNewSpeaker: (name: String) -> Unit
+) {
+    val context = LocalContext.current
+    val matchedSpeaker = remember(line.speaker, speakers) {
+        line.speaker?.let { spk ->
+            speakers.find { it.name.equals(spk, ignoreCase = true) }
+        }
+    }
+
+    var selectedSpeakerId by remember {
+        mutableStateOf(matchedSpeaker?.id ?: speakers.firstOrNull()?.id ?: "")
+    }
+    var isCreatingNew by remember {
+        mutableStateOf(speakers.isEmpty() || matchedSpeaker == null && line.speaker != null)
+    }
+    var newSpeakerName by remember {
+        mutableStateOf(if (matchedSpeaker == null && line.speaker != null) line.speaker else "")
+    }
+
+    var isPreviewPlaying by remember { mutableStateOf(false) }
+    var previewPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
+    val durationMs = (line.localEndMs - line.localStartMs).coerceAtLeast(1000)
+
+    DisposableEffect(audioUri) {
+        onDispose {
+            previewPlayer?.stop()
+            previewPlayer?.release()
+            previewPlayer = null
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Verified,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp)
+                )
+                Text("Designate Golden Sample", fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                // Line preview excerpt
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "\"${line.text}\"",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Clip: ${formatDuration(line.localStartMs)} - ${formatDuration(line.localEndMs)} (${durationMs / 1000}s)",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                            IconButton(
+                                onClick = {
+                                    try {
+                                        if (previewPlayer == null) {
+                                            val p = MediaPlayer().apply {
+                                                setDataSource(context, Uri.parse(audioUri))
+                                                prepare()
+                                                seekTo(line.localStartMs)
+                                                setOnCompletionListener {
+                                                    isPreviewPlaying = false
+                                                }
+                                            }
+                                            previewPlayer = p
+                                            p.start()
+                                            isPreviewPlaying = true
+                                        } else {
+                                            if (isPreviewPlaying) {
+                                                previewPlayer?.pause()
+                                                isPreviewPlaying = false
+                                            } else {
+                                                previewPlayer?.seekTo(line.localStartMs)
+                                                previewPlayer?.start()
+                                                isPreviewPlaying = true
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        Toast.makeText(context, "Could not preview: ${e.message}", Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (isPreviewPlaying) Icons.Default.PauseCircle else Icons.Default.PlayCircle,
+                                    contentDescription = "Preview Clip",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(28.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Speaker Selection
+                Text(
+                    text = "Assign Reference Sample To:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                if (speakers.isNotEmpty()) {
+                    speakers.forEach { speaker ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedSpeakerId = speaker.id
+                                    isCreatingNew = false
+                                }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            RadioButton(
+                                selected = !isCreatingNew && selectedSpeakerId == speaker.id,
+                                onClick = {
+                                    selectedSpeakerId = speaker.id
+                                    isCreatingNew = false
+                                }
+                            )
+                            Column {
+                                Text(
+                                    text = speaker.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                if (!speaker.relationshipOrRole.isNullOrBlank()) {
+                                    Text(
+                                        text = speaker.relationshipOrRole,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Option: Create New Profile
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isCreatingNew = true }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    RadioButton(
+                        selected = isCreatingNew,
+                        onClick = { isCreatingNew = true }
+                    )
+                    Text(
+                        text = "+ Create New Speaker Profile",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                if (isCreatingNew) {
+                    OutlinedTextField(
+                        value = newSpeakerName,
+                        onValueChange = { newSpeakerName = it },
+                        label = { Text("New Speaker Name *") },
+                        placeholder = { Text("e.g. Austin Grindy") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    if (isCreatingNew) {
+                        if (newSpeakerName.isNotBlank()) {
+                            onCreateNewSpeaker(newSpeakerName.trim())
+                        } else {
+                            Toast.makeText(context, "Please enter speaker name", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        if (selectedSpeakerId.isNotBlank()) {
+                            onAssign(selectedSpeakerId)
+                        }
+                    }
+                }
+            ) {
+                Text("Set as Golden Sample")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }

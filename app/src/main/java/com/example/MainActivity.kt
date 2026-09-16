@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Settings
 import com.example.ui.SettingsScreen
 import com.example.ui.PlaybackScreen
+import com.example.ui.SpeakerManagementScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -55,6 +56,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.draw.clip
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import com.example.ui.ThemeMode
@@ -68,6 +70,15 @@ import androidx.compose.animation.core.*
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+
+import androidx.compose.ui.text.style.TextAlign
+import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
+import com.example.service.RecordingService
 
 @Composable
 fun ProcessingWaveformVisualizer(
@@ -351,10 +362,52 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val coroutineScope = rememberCoroutineScope()
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val audioGranted = perms[Manifest.permission.RECORD_AUDIO] == true
+        if (!audioGranted) {
+            Toast.makeText(context, "Microphone permission is required for live recording.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        val permissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        permissionLauncher.launch(permissions.toTypedArray())
+    }
+
+    val receiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                if (intent.action == RecordingService.ACTION_RECORDING_FINISHED) {
+                    val path = intent.getStringExtra(RecordingService.EXTRA_WAV_PATH)
+                    path?.let { viewModel.processRecordedFile(context, it) }
+                }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        val filter = IntentFilter(RecordingService.ACTION_RECORDING_FINISHED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            context.registerReceiver(receiver, filter)
+        }
+        onDispose {
+            context.unregisterReceiver(receiver)
+        }
+    }
     
     var showSettings by remember { mutableStateOf(false) }
+    var currentTab by remember { mutableStateOf(0) }
     var activePlaybackRecord by remember { mutableStateOf<com.example.db.TranscriptionRecord?>(null) }
     var pendingSequentialFiles by remember { mutableStateOf<List<com.example.ui.SequentialAudioFile>?>(null) }
+    var pendingBatchUris by remember { mutableStateOf<List<Uri>?>(null) }
 
     val audioPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetMultipleContents()
@@ -363,8 +416,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             if (uris.size == 1) {
                 viewModel.transcribeSelectedAudio(context, uris.first())
             } else {
-                val analyzed = viewModel.analyzeSelectedFilesForSequence(context, uris)
-                pendingSequentialFiles = analyzed
+                pendingBatchUris = uris
             }
         }
     }
@@ -424,14 +476,38 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             onImportJson = {
                 importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
             },
+            onDriveConnected = { viewModel.setDriveConnected(it) },
+            onOpenSpeakers = {
+                showSettings = false
+                currentTab = 2
+            },
+            onSaveLocation = { viewModel.saveLocation(it) },
+            onDeleteLocation = { viewModel.deleteLocation(it) },
             onNavigateBack = { showSettings = false }
         )
         return
     }
 
     if (activePlaybackRecord != null) {
+        val parts = if (activePlaybackRecord!!.sessionId != null) {
+            uiState.history.filter { it.sessionId == activePlaybackRecord!!.sessionId }
+        } else {
+            emptyList()
+        }
         PlaybackScreen(
             record = activePlaybackRecord!!,
+            sessionParts = parts,
+            speakers = uiState.speakers,
+            onAssignGoldenSample = { speakerId, audioUri, startMs, endMs, title ->
+                viewModel.assignGoldenSample(speakerId, audioUri, startMs, endMs, title)
+            },
+            onSaveNewSpeaker = { newProfile ->
+                viewModel.saveSpeaker(newProfile)
+            },
+            onGetDriveStreamInfo = { driveId -> viewModel.getDriveStreamInfo(context, driveId) },
+            onUpdateConfidenceAndSpeakers = { id, labels, conf ->
+                viewModel.updateTranscriptionConfidenceAndSpeaker(id, labels, conf)
+            },
             onNavigateBack = { activePlaybackRecord = null }
         )
         return
@@ -442,13 +518,19 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         viewModel.initApiKey(context)
     }
 
-    var currentTab by remember { mutableStateOf(0) }
-
     Scaffold(
         contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
-                title = { Text(if (currentTab == 0) "Transcribe Audio" else "Journal History") },
+                title = {
+                    Text(
+                        when (currentTab) {
+                            0 -> "Transcribe Audio"
+                            1 -> "Journal History"
+                            else -> "Speakers Directory"
+                        }
+                    )
+                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
@@ -476,6 +558,13 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     label = { Text("Journal History") },
                     selected = currentTab == 1,
                     onClick = { currentTab = 1 },
+                    modifier = Modifier.heightIn(min = 48.dp)
+                )
+                NavigationBarItem(
+                    icon = { Icon(Icons.Default.RecordVoiceOver, contentDescription = "Speakers") },
+                    label = { Text("Speakers") },
+                    selected = currentTab == 2,
+                    onClick = { currentTab = 2 },
                     modifier = Modifier.heightIn(min = 48.dp)
                 )
             }
@@ -510,48 +599,126 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 )
             }
 
-            if (currentTab == 1) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
+            // Non-obtrusive background batch queue status indicator
+            if (uiState.isLoading) {
+                Surface(
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f),
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    TranscriptionHistoryScreen(
-                        uiState = uiState,
-                        onUpdateCategory = { record, category -> viewModel.updateCategory(record, category) },
-                        onUpdateSpeakerName = { record, name -> viewModel.updateSpeakerName(record, name) },
-                        onDeleteTranscriptions = { ids -> viewModel.deleteTranscriptions(ids) },
-                        onDeleteSession = { sessionId -> viewModel.deleteSession(sessionId) },
-                        onExportJson = { record ->
-                            recordToExport = record
-                            exportLauncher.launch("transcription_${record.timestamp}.json")
-                        },
-                        onExportSessionJson = { sessionId, title, parts ->
-                            sessionToExport = Pair(title, parts)
-                            val cleanTitle = title.replace(Regex("[^A-Za-z0-9_]"), "_").lowercase()
-                            exportSessionLauncher.launch("session_${cleanTitle}_${System.currentTimeMillis()}.json")
-                        },
-                        onExportAllJson = {
-                            exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
-                        },
-                        onImportJson = {
-                            importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
-                        },
-                        onSync = { viewModel.syncTranscriptions() },
-                        defaultKeywords = defaultKeywords,
-                        onOpenPlayback = { record -> activePlaybackRecord = record },
-                        audioPlayerContent = { uri -> AudioPlayerComponent(uri) }
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = uiState.statusMessage ?: "Processing background task...",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                            uiState.progress?.let { progressVal ->
+                                Text(
+                                    text = "${(progressVal * 100).toInt()}%",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+
+                        uiState.progress?.let { progressVal ->
+                            LinearProgressIndicator(
+                                progress = { progressVal },
+                                modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                            )
+                        } ?: LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+                        )
+                    }
                 }
-            } else {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .padding(horizontal = 16.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
+            }
+
+            when (currentTab) {
+                1 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        TranscriptionHistoryScreen(
+                            uiState = uiState,
+                            onUpdateCategory = { record, category -> viewModel.updateCategory(record, category) },
+                            onUpdateSpeakerName = { record, name -> viewModel.updateSpeakerName(record, name) },
+                            onDeleteTranscriptions = { ids -> viewModel.deleteTranscriptions(ids) },
+                            onDeleteSession = { sessionId -> viewModel.deleteSession(sessionId) },
+                            onExportJson = { record ->
+                                recordToExport = record
+                                exportLauncher.launch("transcription_${record.timestamp}.json")
+                            },
+                            onExportSessionJson = { sessionId, title, parts ->
+                                sessionToExport = Pair(title, parts)
+                                val cleanTitle = title.replace(Regex("[^A-Za-z0-9_]"), "_").lowercase()
+                                exportSessionLauncher.launch("session_${cleanTitle}_${System.currentTimeMillis()}.json")
+                            },
+                            onExportAllJson = {
+                                exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
+                            },
+                            onImportJson = {
+                                importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                            },
+                            onSync = { viewModel.syncTranscriptions() },
+                            defaultKeywords = defaultKeywords,
+                            onOpenPlayback = { record -> activePlaybackRecord = record },
+                            onSaveSpeaker = { viewModel.saveSpeaker(it) },
+                            onRemoveGoldenSample = { viewModel.removeGoldenSample(it) },
+                            audioPlayerContent = { uri -> AudioPlayerComponent(uri) }
+                        )
+                    }
+                }
+                2 -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                    ) {
+                        SpeakerManagementScreen(
+                            speakers = uiState.speakers,
+                            onSaveSpeaker = { viewModel.saveSpeaker(it) },
+                            onDeleteSpeaker = { viewModel.deleteSpeaker(it) },
+                            onRemoveGoldenSample = { viewModel.removeGoldenSample(it) },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+                else -> {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(horizontal = 16.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                     val activeKey = viewModel.getActiveApiKey()
                     if (activeKey.isBlank()) {
                         Card(
@@ -642,6 +809,96 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text("Choose Audio File(s)")
+                            }
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                        ),
+                        shape = MaterialTheme.shapes.large
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            Surface(
+                                shape = CircleShape,
+                                color = if (uiState.isRecording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(64.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                                        contentDescription = if (uiState.isRecording) "Stop Recording" else "Start Recording",
+                                        tint = if (uiState.isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(32.dp)
+                                    )
+                                }
+                            }
+                            
+                            Text(
+                                text = if (uiState.isRecording) "Recording in Progress..." else "Capture Live Audio",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                            
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    imageVector = if (uiState.useBluetoothMic) Icons.Default.Bluetooth else Icons.Default.Smartphone,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Text(
+                                    text = if (uiState.useBluetoothMic) "Using Bluetooth Earbud Mic" else "Using Phone Microphone",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.clickable { viewModel.toggleBluetoothMic() }
+                            ) {
+                                Checkbox(
+                                    checked = uiState.useBluetoothMic,
+                                    onCheckedChange = { viewModel.toggleBluetoothMic() }
+                                )
+                                Text("Prefer Bluetooth Earbud Mic", style = MaterialTheme.typography.bodySmall)
+                            }
+
+                            Button(
+                                onClick = {
+                                    if (uiState.isRecording) {
+                                        viewModel.stopRecording(context)
+                                    } else {
+                                        viewModel.startRecording(context)
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (uiState.isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                                )
+                            ) {
+                                Text(if (uiState.isRecording) "Stop & Finalize" else "Start Recording")
+                            }
+                            
+                            if (uiState.isRecording) {
+                                Text(
+                                    "Recording is saved 'Direct-to-Disk' every few ms for fail-safe protection.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                    textAlign = TextAlign.Center
+                                )
                             }
                         }
                     }
@@ -798,6 +1055,25 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                 }
             }
         }
+    }
+
+        if (pendingBatchUris != null) {
+            BatchSelectionBottomSheet(
+                uris = pendingBatchUris!!,
+                onDismiss = { pendingBatchUris = null },
+                onSequentialOption = {
+                    val uris = pendingBatchUris!!
+                    pendingBatchUris = null
+                    val analyzed = viewModel.analyzeSelectedFilesForSequence(context, uris)
+                    pendingSequentialFiles = analyzed
+                },
+                onSeparateOption = {
+                    val uris = pendingBatchUris!!
+                    pendingBatchUris = null
+                    viewModel.transcribeBatchAudio(context, uris)
+                }
+            )
+        }
 
         if (pendingSequentialFiles != null) {
             SequenceConfirmationSheet(
@@ -808,6 +1084,144 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     viewModel.transcribeSequentialSession(context, orderedFiles, title)
                 }
             )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun BatchSelectionBottomSheet(
+    uris: List<Uri>,
+    onDismiss: () -> Unit,
+    onSequentialOption: () -> Unit,
+    onSeparateOption: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        dragHandle = { BottomSheetDefaults.DragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.LibraryMusic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = "Batch Audio Selection",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${uris.size} audio files selected • Choose processing strategy",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Text(
+                text = "How would you like to process these recordings?",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+
+            // Strategy Cards
+            Card(
+                onClick = onSequentialOption,
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.QueueMusic,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Multi-Part Sequential Session",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Stitch files into a single chronological session group. Perfect for multi-part continuous lectures, interviews, or voice notes.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Card(
+                onClick = onSeparateOption,
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+                ),
+                shape = MaterialTheme.shapes.medium
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AudioFile,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.size(28.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Separate Standalone Recordings",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Process as separate independent recordings in the background queue. Perfect for unrelated individual files.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
         }
     }
 }

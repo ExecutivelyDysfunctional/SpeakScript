@@ -36,7 +36,15 @@ data class Transcription(
     @ColumnInfo(name = "part_duration_ms")
     val partDurationMs: Int? = null,
     @ColumnInfo(name = "drive_file_id")
-    val driveFileId: String? = null
+    val driveFileId: String? = null,
+    @ColumnInfo(name = "location_name")
+    val locationName: String? = null,
+    @ColumnInfo(name = "active_speakers_csv")
+    val activeSpeakersCsv: String? = null,
+    @ColumnInfo(name = "mentioned_people_csv")
+    val mentionedPeopleCsv: String? = null,
+    @ColumnInfo(name = "diarization_confidence")
+    val diarizationConfidence: String? = null
 ) {
     // Backwards-compatibility convenience properties
     val text: String
@@ -76,7 +84,12 @@ data class Transcription(
         partIndex = null,
         totalParts = null,
         sessionTitle = null,
-        partDurationMs = null
+        partDurationMs = null,
+        driveFileId = null,
+        locationName = null,
+        activeSpeakersCsv = null,
+        mentionedPeopleCsv = null,
+        diarizationConfidence = null
     )
 }
 
