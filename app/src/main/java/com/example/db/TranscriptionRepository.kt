@@ -1,17 +1,38 @@
 package com.example.db
 
 import kotlinx.coroutines.flow.Flow
-import com.example.ui.TranscriptionRecord
 
 class TranscriptionRepository(private val transcriptionDao: TranscriptionDao) {
-    val allTranscriptions: Flow<List<TranscriptionRecord>> = transcriptionDao.getAllTranscriptions()
+    val allTranscriptions: Flow<List<Transcription>> = transcriptionDao.getAllTranscriptions()
 
-    suspend fun insert(record: TranscriptionRecord) {
-        transcriptionDao.insertTranscription(record)
+    suspend fun getById(id: String): Transcription? = transcriptionDao.getTranscriptionById(id)
+
+    fun getBySession(sessionId: String): Flow<List<Transcription>> = transcriptionDao.getTranscriptionsBySession(sessionId)
+
+    suspend fun getBySessionSync(sessionId: String): List<Transcription> = transcriptionDao.getTranscriptionsBySessionSync(sessionId)
+
+    suspend fun deleteSession(sessionId: String) {
+        transcriptionDao.deleteSession(sessionId)
+    }
+
+    suspend fun insert(transcription: Transcription) {
+        transcriptionDao.insertTranscription(transcription)
+    }
+
+    suspend fun insertAll(transcriptions: List<Transcription>) {
+        transcriptionDao.insertTranscriptions(transcriptions)
+    }
+
+    suspend fun update(transcription: Transcription) {
+        transcriptionDao.updateTranscription(transcription)
     }
 
     suspend fun clear() {
         transcriptionDao.clearAll()
+    }
+
+    suspend fun delete(transcription: Transcription) {
+        transcriptionDao.deleteTranscription(transcription)
     }
 
     suspend fun deleteTranscriptions(ids: List<String>) {

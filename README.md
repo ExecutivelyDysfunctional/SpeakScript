@@ -7,20 +7,20 @@
 # 📖 User Guide
 
 ### What Transcribe AI Does for You
-- **Record or Import Audio**: Capture live microphone notes or import existing audio files (`.aac`, `.m4a`) from your device.
+- **Import Audio**: Import audio files (`.aac`, `.m4a`, `.mp3`, `.wav`) directly from your device.
 - **Real-Time Transcription**: Watch transcriptions stream in live with automatic speaker identification (`Speaker 1`, `Speaker 2`) and keyword highlighting.
 - **Smart Summaries & Highlights**: Automatically get executive summaries and key takeaways for every conversation.
 - **Interactive Audio Player**: Review recordings using a visual waveform player with variable playback speeds (`0.5x`, `1.0x`, `1.5x`, `2.0x`) and skip controls.
 - **Ask Gemini Q&A**: Ask complex questions about your transcripts and get deep reasoning answers instantly.
-- **Organize & Search**: Tag conversations by category (**Work**, **Personal**, **Meeting**), rename speakers, search across text or dates, batch delete, and export records as JSON.
+- **Organize & Search**: Search across transcript text or dates, rename speakers, batch delete, and export records as JSON.
 - **Appearance Settings**: Easily switch between Light, Dark, or System themes.
 
 ### How to Use the App
-1. **Record Audio**: Tap the **Record Audio** button to start recording. Tap **Stop Recording** when finished to begin transcription.
-2. **Import Audio**: Tap **Pick AAC Audio** to select an audio file from your device.
-3. **Playback**: Tap the **Play** button on any history card to listen to the recording with waveform progress tracking and speed controls.
+1. **Import Audio**: Tap **Pick AAC Audio** (or browse supported formats) to select an audio file from your device.
+2. **Review Transcription**: Watch the real-time transcription and summary generate automatically.
+3. **Playback**: Tap the **Play** button to listen to the recording with waveform progress tracking and speed controls.
 4. **Ask Questions**: Type your question in the query box under a transcript and tap **Ask Gemini** for deep insights.
-5. **Organize**: Tap speaker names to rename them, tap category pills to tag notes, or use the search bar to find past transcriptions instantly.
+5. **Organize**: Tap speaker names to rename them or use the search bar in Journal History to find past transcriptions instantly.
 6. **Settings**: Tap the gear icon in the top bar to manage your account sync and theme preferences.
 
 ---
@@ -31,13 +31,13 @@
 The application follows modern Android architecture (MVVM, Kotlin Coroutines, Jetpack Compose, Room):
 ```
 app/src/main/java/com/example/
-├── MainActivity.kt               # Main entry point and UI screens
+├── MainActivity.kt               # Main entry point, player, and transcript viewer
+├── TranscriptionHistoryScreen.kt # Journal history, search, batch delete, export
 ├── api/
 │   └── GeminiApiService.kt       # Retrofit service & Gemini streaming client
-├── audio/
-│   └── AudioRecorder.kt          # Android MediaRecorder wrapper
 ├── db/
 │   ├── AppDatabase.kt            # Room database definition
+│   ├── Transcription.kt          # Room entity
 │   ├── TranscriptionDao.kt       # Room data access object
 │   └── TranscriptionRepository.kt# Repository managing local/cloud data flows
 └── ui/

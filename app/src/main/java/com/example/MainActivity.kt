@@ -41,8 +41,14 @@ import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Settings
 import com.example.ui.SettingsScreen
+import com.example.ui.PlaybackScreen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.QueueMusic
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.ArrowDownward
+import com.example.ui.formatDuration
 import kotlinx.coroutines.delay
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.SpanStyle
@@ -241,6 +247,104 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+@Composable
+fun VisualErrorBanner(
+    errorMessage: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = "Error Notice",
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Dismiss error",
+                    tint = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun VisualInfoBanner(
+    infoMessage: String,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+        ),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                imageVector = Icons.Default.CheckCircle,
+                contentDescription = "Success Notice",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(24.dp)
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Text(
+                text = infoMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f)
+            )
+            IconButton(
+                onClick = onDismiss,
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Dismiss message",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppScreen(viewModel: MainViewModel = viewModel()) {
@@ -249,30 +353,23 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
     val coroutineScope = rememberCoroutineScope()
     
     var showSettings by remember { mutableStateOf(false) }
-    
-    if (showSettings) {
-        SettingsScreen(
-            uiState = uiState,
-            onThemeModeChange = { viewModel.setThemeMode(it) },
-            onSaveApiKey = { viewModel.saveCustomApiKey(context, it) },
-            onSaveOpenRouterApiKey = { viewModel.saveOpenRouterApiKey(context, it) },
-            onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
-            onAiProviderChange = { viewModel.setAiProvider(context, it) },
-            onSaveWebClientId = { viewModel.saveWebClientId(context, it) },
-            onNavigateBack = { showSettings = false }
-        )
-        return
-    }
+    var activePlaybackRecord by remember { mutableStateOf<com.example.db.TranscriptionRecord?>(null) }
+    var pendingSequentialFiles by remember { mutableStateOf<List<com.example.ui.SequentialAudioFile>?>(null) }
 
     val audioPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
-    ) { uri: Uri? ->
-        uri?.let {
-            viewModel.transcribeSelectedAudio(context, it)
+        contract = ActivityResultContracts.GetMultipleContents()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            if (uris.size == 1) {
+                viewModel.transcribeSelectedAudio(context, uris.first())
+            } else {
+                val analyzed = viewModel.analyzeSelectedFilesForSequence(context, uris)
+                pendingSequentialFiles = analyzed
+            }
         }
     }
 
-    var recordToExport by remember { mutableStateOf<com.example.ui.TranscriptionRecord?>(null) }
+    var recordToExport by remember { mutableStateOf<com.example.db.Transcription?>(null) }
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri: Uri? ->
@@ -284,21 +381,71 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         recordToExport = null
     }
 
+    var sessionToExport by remember { mutableStateOf<Pair<String, List<com.example.db.Transcription>>?>(null) }
+    val exportSessionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        uri?.let {
+            sessionToExport?.let { (title, parts) ->
+                viewModel.exportSessionToJson(context, it, title, parts)
+            }
+        }
+        sessionToExport = null
+    }
+
+    val exportAllLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        uri?.let {
+            viewModel.exportAllTranscriptionsToJson(context, it)
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let {
+            viewModel.importTranscriptionsFromJson(context, it)
+        }
+    }
+    
+    if (showSettings) {
+        SettingsScreen(
+            uiState = uiState,
+            onThemeModeChange = { viewModel.setThemeMode(it) },
+            onSaveApiKey = { viewModel.saveCustomApiKey(context, it) },
+            onSaveOpenRouterApiKey = { viewModel.saveOpenRouterApiKey(context, it) },
+            onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
+            onAiProviderChange = { viewModel.setAiProvider(context, it) },
+            onSaveWebClientId = { viewModel.saveWebClientId(context, it) },
+            onExportAllJson = {
+                exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
+            },
+            onImportJson = {
+                importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+            },
+            onNavigateBack = { showSettings = false }
+        )
+        return
+    }
+
+    if (activePlaybackRecord != null) {
+        PlaybackScreen(
+            record = activePlaybackRecord!!,
+            onNavigateBack = { activePlaybackRecord = null }
+        )
+        return
+    }
+
     LaunchedEffect(Unit) {
         viewModel.initDatabase(context)
         viewModel.initApiKey(context)
     }
 
-    LaunchedEffect(uiState.error) {
-        uiState.error?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
-            viewModel.clearError()
-        }
-    }
-
     var currentTab by remember { mutableStateOf(0) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text(if (currentTab == 0) "Transcribe Audio" else "Journal History") },
@@ -306,7 +453,10 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     containerColor = MaterialTheme.colorScheme.primaryContainer
                 ),
                 actions = {
-                    IconButton(onClick = { showSettings = true }) {
+                    IconButton(
+                        onClick = { showSettings = true },
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                    ) {
                         Icon(Icons.Default.Settings, contentDescription = "Settings")
                     }
                 }
@@ -318,13 +468,15 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     icon = { Icon(Icons.Default.AudioFile, contentDescription = "Transcribe") },
                     label = { Text("Transcribe") },
                     selected = currentTab == 0,
-                    onClick = { currentTab = 0 }
+                    onClick = { currentTab = 0 },
+                    modifier = Modifier.heightIn(min = 48.dp)
                 )
                 NavigationBarItem(
                     icon = { Icon(Icons.Default.History, contentDescription = "Journal") },
                     label = { Text("Journal History") },
                     selected = currentTab == 1,
-                    onClick = { currentTab = 1 }
+                    onClick = { currentTab = 1 },
+                    modifier = Modifier.heightIn(min = 48.dp)
                 )
             }
         }
@@ -337,31 +489,69 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             )
         }
 
-        if (currentTab == 1) {
-            Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-                TranscriptionHistoryScreen(
-                    uiState = uiState,
-                    onUpdateCategory = { record, category -> viewModel.updateCategory(record, category) },
-                    onUpdateSpeakerName = { record, name -> viewModel.updateSpeakerName(record, name) },
-                    onDeleteTranscriptions = { ids -> viewModel.deleteTranscriptions(ids) },
-                    onExportJson = { record ->
-                        recordToExport = record
-                        exportLauncher.launch("transcription_${record.timestamp}.json")
-                    },
-                    onSync = { viewModel.syncTranscriptions() },
-                    defaultKeywords = defaultKeywords,
-                    audioPlayerContent = { uri -> AudioPlayerComponent(uri) }
+        Column(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+            // Visual Error Banner (Zero silent failures in console)
+            uiState.error?.let { err ->
+                VisualErrorBanner(
+                    errorMessage = err,
+                    onDismiss = { viewModel.clearError() }
                 )
             }
-        } else {
-            Column(
-                modifier = Modifier
-                    .padding(padding)
-                    .padding(16.dp)
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
+
+            // Visual Info/Success Banner
+            uiState.infoMessage?.let { info ->
+                VisualInfoBanner(
+                    infoMessage = info,
+                    onDismiss = { viewModel.clearInfoMessage() }
+                )
+            }
+
+            if (currentTab == 1) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                ) {
+                    TranscriptionHistoryScreen(
+                        uiState = uiState,
+                        onUpdateCategory = { record, category -> viewModel.updateCategory(record, category) },
+                        onUpdateSpeakerName = { record, name -> viewModel.updateSpeakerName(record, name) },
+                        onDeleteTranscriptions = { ids -> viewModel.deleteTranscriptions(ids) },
+                        onDeleteSession = { sessionId -> viewModel.deleteSession(sessionId) },
+                        onExportJson = { record ->
+                            recordToExport = record
+                            exportLauncher.launch("transcription_${record.timestamp}.json")
+                        },
+                        onExportSessionJson = { sessionId, title, parts ->
+                            sessionToExport = Pair(title, parts)
+                            val cleanTitle = title.replace(Regex("[^A-Za-z0-9_]"), "_").lowercase()
+                            exportSessionLauncher.launch("session_${cleanTitle}_${System.currentTimeMillis()}.json")
+                        },
+                        onExportAllJson = {
+                            exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
+                        },
+                        onImportJson = {
+                            importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
+                        },
+                        onSync = { viewModel.syncTranscriptions() },
+                        defaultKeywords = defaultKeywords,
+                        onOpenPlayback = { record -> activePlaybackRecord = record },
+                        audioPlayerContent = { uri -> AudioPlayerComponent(uri) }
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .padding(horizontal = 16.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
                     val activeKey = viewModel.getActiveApiKey()
                     if (activeKey.isBlank()) {
                         Card(
@@ -426,12 +616,12 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                 }
                             }
                             Text(
-                                text = "Transcribe Audio File",
+                                text = "Transcribe Audio File(s)",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
                             Text(
-                                text = "Select an audio file (AAC, M4A, MP3, WAV, etc.) to transcribe speech into text using AI.",
+                                text = "Select a single audio file or select multiple sequential parts to transcribe as a connected session.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center
@@ -451,7 +641,7 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                     modifier = Modifier.size(20.dp)
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Choose Audio File")
+                                Text("Choose Audio File(s)")
                             }
                         }
                     }
@@ -510,7 +700,38 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                     uiState.lastTranscription?.let { text ->
                         Card(modifier = Modifier.fillMaxWidth()) {
                             Column(modifier = Modifier.padding(16.dp)) {
-                                Text("Latest Transcription:", style = MaterialTheme.typography.titleMedium)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        "Latest Transcription:", 
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    FilledTonalButton(
+                                        onClick = {
+                                            val matchingRecord = uiState.history.firstOrNull { it.text == text }
+                                                ?: com.example.db.Transcription(
+                                                    text = text,
+                                                    summary = uiState.lastSummary,
+                                                    audioUri = uiState.history.firstOrNull()?.audioUri
+                                                )
+                                            activePlaybackRecord = matchingRecord
+                                        },
+                                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                        modifier = Modifier.heightIn(min = 36.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Audiotrack,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Open Player", style = MaterialTheme.typography.labelSmall)
+                                    }
+                                }
                                 uiState.lastSummary?.let { summaryText ->
                                     Spacer(modifier = Modifier.height(8.dp))
                                     Surface(
@@ -574,6 +795,224 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        if (pendingSequentialFiles != null) {
+            SequenceConfirmationSheet(
+                files = pendingSequentialFiles!!,
+                onDismiss = { pendingSequentialFiles = null },
+                onConfirm = { orderedFiles, title ->
+                    pendingSequentialFiles = null
+                    viewModel.transcribeSequentialSession(context, orderedFiles, title)
+                }
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SequenceConfirmationSheet(
+    files: List<com.example.ui.SequentialAudioFile>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<com.example.ui.SequentialAudioFile>, String) -> Unit
+) {
+    var orderedFiles by remember(files) { mutableStateOf(files) }
+    val defaultTitle = remember(files) {
+        val first = files.firstOrNull()?.displayName ?: "Recording Session"
+        val clean = first.substringBeforeLast(".")
+            .replace(Regex("[_\\-]+part[\\-_\\d]+", RegexOption.IGNORE_CASE), "")
+            .replace("_", " ")
+            .replace("-", " ")
+            .trim()
+        clean.ifBlank { "Recording Session" }
+    }
+    var sessionTitle by remember { mutableStateOf(defaultTitle) }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        dragHandle = { BottomSheetDefaults.DragHandle() }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    modifier = Modifier.size(44.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            imageVector = Icons.Default.QueueMusic,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = "Sequential Recording Session",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "${orderedFiles.size} audio parts detected • Verify playback order",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            OutlinedTextField(
+                value = sessionTitle,
+                onValueChange = { sessionTitle = it },
+                label = { Text("Session Title") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = MaterialTheme.shapes.medium
+            )
+
+            Text(
+                text = "Audio Parts Sequence (Processed & linked in this order):",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+            )
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 260.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                orderedFiles.forEachIndexed { index, file ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        shape = MaterialTheme.shapes.medium
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = "${index + 1}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onPrimary
+                                    )
+                                }
+                            }
+
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = file.displayName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                if (file.durationMs > 0) {
+                                    Text(
+                                        text = formatDuration(file.durationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    if (index > 0) {
+                                        val mutable = orderedFiles.toMutableList()
+                                        val item = mutable.removeAt(index)
+                                        mutable.add(index - 1, item)
+                                        orderedFiles = mutable
+                                    }
+                                },
+                                enabled = index > 0,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowUpward,
+                                    contentDescription = "Move Up",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+
+                            IconButton(
+                                onClick = {
+                                    if (index < orderedFiles.size - 1) {
+                                        val mutable = orderedFiles.toMutableList()
+                                        val item = mutable.removeAt(index)
+                                        mutable.add(index + 1, item)
+                                        orderedFiles = mutable
+                                    }
+                                },
+                                enabled = index < orderedFiles.size - 1,
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.ArrowDownward,
+                                    contentDescription = "Move Down",
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp, bottom = 12.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Text("Cancel")
+                }
+                Button(
+                    onClick = {
+                        onConfirm(orderedFiles, sessionTitle.ifBlank { "Sequential Session" })
+                    },
+                    modifier = Modifier.weight(1.6f)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PlayArrow,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Transcribe (${orderedFiles.size} Parts)")
+                }
             }
         }
     }
@@ -657,36 +1096,42 @@ fun AudioPlayerComponent(uriString: String) {
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = {
-                    val nextSpeed = when (playbackSpeed) {
-                        1.0f -> 1.5f
-                        1.5f -> 2.0f
-                        2.0f -> 0.5f
-                        0.5f -> 1.0f
-                        else -> 1.0f
-                    }
-                    playbackSpeed = nextSpeed
-                    mediaPlayer?.let {
-                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-                            try {
-                                it.playbackParams = it.playbackParams.setSpeed(nextSpeed)
-                            } catch (e: Exception) {
-                                // Ignore
+                TextButton(
+                    onClick = {
+                        val nextSpeed = when (playbackSpeed) {
+                            1.0f -> 1.5f
+                            1.5f -> 2.0f
+                            2.0f -> 0.5f
+                            0.5f -> 1.0f
+                            else -> 1.0f
+                        }
+                        playbackSpeed = nextSpeed
+                        mediaPlayer?.let {
+                            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                                try {
+                                    it.playbackParams = it.playbackParams.setSpeed(nextSpeed)
+                                } catch (e: Exception) {
+                                    // Ignore
+                                }
                             }
                         }
-                    }
-                }) {
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
                     Text("${playbackSpeed}x")
                 }
                 
-                IconButton(onClick = {
-                    mediaPlayer?.let {
-                        it.seekTo((it.currentPosition - 10000).coerceAtLeast(0))
-                        if (it.duration > 0) {
-                            progress = it.currentPosition.toFloat() / it.duration
+                IconButton(
+                    onClick = {
+                        mediaPlayer?.let {
+                            it.seekTo((it.currentPosition - 10000).coerceAtLeast(0))
+                            if (it.duration > 0) {
+                                progress = it.currentPosition.toFloat() / it.duration
+                            }
                         }
-                    }
-                }) {
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.FastRewind,
                         contentDescription = "Rewind 10s"
@@ -727,7 +1172,8 @@ fun AudioPlayerComponent(uriString: String) {
                             mediaPlayer?.release()
                             mediaPlayer = null
                         }
-                    }
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(
                         imageVector = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
@@ -737,14 +1183,17 @@ fun AudioPlayerComponent(uriString: String) {
                     )
                 }
                 
-                IconButton(onClick = {
-                    mediaPlayer?.let {
-                        it.seekTo((it.currentPosition + 10000).coerceAtMost(it.duration))
-                        if (it.duration > 0) {
-                            progress = it.currentPosition.toFloat() / it.duration
+                IconButton(
+                    onClick = {
+                        mediaPlayer?.let {
+                            it.seekTo((it.currentPosition + 10000).coerceAtMost(it.duration))
+                            if (it.duration > 0) {
+                                progress = it.currentPosition.toFloat() / it.duration
+                            }
                         }
-                    }
-                }) {
+                    },
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+                ) {
                     Icon(
                         imageVector = Icons.Default.FastForward,
                         contentDescription = "Forward 10s"
