@@ -1,0 +1,77 @@
+name: Scheduled Debug APK Build
+
+on:
+  schedule:
+    # Triggers twice daily (00:00 and 12:00 UTC)
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+
+jobs:
+  scheduled-build:
+    name: Check and Build Debug APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for Recent Commits
+        id: check_commits
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Manual trigger detected. Proceeding with build."
+            echo "has_new_build=true" >> $GITHUB_OUTPUT
+          else
+            # Check if there are any commits in the last 13 hours (covering the 12-hour schedule window)
+            RECENT_COMMITS=$(git log --since="13 hours ago" --oneline)
+            if [ -z "$RECENT_COMMITS" ]; then
+              echo "No new commits found in the last 13 hours. Skipping build."
+              echo "has_new_build=false" >> $GITHUB_OUTPUT
+            else
+              echo "Found new commits:"
+              echo "$RECENT_COMMITS"
+              echo "has_new_build=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Prepare Keystore and Environment
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        run: |
+          if [ -f "debug.keystore.base64" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+            echo "Decoded debug.keystore from base64."
+          fi
+          if [ ! -f ".env" ] && [ -f ".env.example" ]; then
+            cp .env.example .env
+            echo "Copied .env.example to .env."
+          fi
+
+      - name: Set up JDK 17
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle Wrapper & Permissions
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        run: |
+          gradle wrapper
+          chmod +x gradlew
+
+      - name: Build Debug APK
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        run: ./gradlew assembleDebug
+
+      - name: Upload Debug APK Artifact
+        if: steps.check_commits.outputs.has_new_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-scheduled
+          path: app/build/outputs/apk/debug/app-debug.apk

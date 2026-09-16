@@ -6,6 +6,10 @@
 ---
 
 ## [Implemented]
+- **GitHub Actions Workflows Modernization & Automated Builds**:
+  - Disabled/removed old `build-apk.yml` workflow that caused build skips/failures on GitHub.
+  - **Immediate Debug APK Build Workflow (`immediate-build.yml`)**: Triggers an immediate APK build upon any push to `main` / `master` or manually via `workflow_dispatch`. Decodes base64 debug keystores and sets up `.env` dynamically.
+  - **Scheduled Debug APK Build Workflow (`scheduled-build.yml`)**: Runs twice daily (`cron: '0 0,12 * * *'`). Inspects git commit history to detect new builds within the 12-hour window; builds and uploads artifacts if new commits exist, or cleanly skips execution if no changes are present.
 - **Biometric Calibration & Voice Matching Fine-Tuning**:
   - **Custom Threshold & Acoustic Controls**: Integrated configurable parameters for Acoustic Matching Sensitivity (`Strict`, `Balanced`, `High Recall`), Reference Audio Slice Duration (`5s`, `10s`, `15s`), Max Bundled Reference Speaker Profiles (`3`, `5`, `10`), and Acoustic Spectrum Analysis Profiles (`Standard`, `Enhanced Harmonic`, `Noise Suppressed`).
   - **Persistent Settings & Prompt Injection**: Calibration choices persist in `SharedPreferences` and dynamically instruct `MainViewModel` and `AudioSliceExtractor` to tune audio slice extraction parameters and inject strict/high-recall matching rules directly into Gemini prompt payloads.
@@ -139,6 +143,8 @@
 ---
 
 ## [Files]
+- `.github/workflows/immediate-build.yml`: Workflow that triggers an immediate debug APK build on push or manual trigger.
+- `.github/workflows/scheduled-build.yml`: Workflow scheduled twice daily that builds a debug APK if new commits are detected.
 - `metadata.json`: Application metadata and platform capabilities for AI Studio.
 - `app/build.gradle.kts`: Gradle build script with dependencies for Compose, Room, Retrofit, and Firebase.
 - `app/src/main/AndroidManifest.xml`: Android application manifest declaring permissions and activities.
