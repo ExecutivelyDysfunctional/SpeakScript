@@ -11,10 +11,11 @@
   - **Eliminated HTTP 400 Bad Request Errors**: Standardized container and MIME mappings for Gemini (e.g. mapping `ftyp` ISO containers to `audio/m4a`, WAV files to `audio/wav`, MP3 to `audio/mp3`, OGG to `audio/ogg`, FLAC to `audio/flac`, and raw ADTS streams to `audio/aac`), ensuring complete API compliance and resolving upload errors.
   - **Expanded Audio Format Processing**: Added full, dynamic file detection, local caching, Drive upload, and Gemini transcription support for WAV (`.wav`), AAC (`.aac`), M4A (`.m4a`), MP3 (`.mp3`), OGG / OPUS (`.ogg`, `.opus`), FLAC (`.flac`), 3GP (`.3gp`), AMR (`.amr`), MP4 Audio (`.mp4`), WMA (`.wma`), and AIFF (`.aiff`).
 - **GitHub Actions Workflows Modernization & Automated Builds**:
-  - Disabled/removed old `build-apk.yml` workflow that caused build skips/failures on GitHub.
-  - **Keystore Fallback & Resilient Signing**: Resolved `:app:validateSigningDebug` build failure when `debug.keystore` is absent in CI runners. Gradle `build.gradle.kts` now automatically decodes `debug.keystore.base64` at build time if present, and seamlessly falls back to Android Gradle Plugin's default debug signing config (`signingConfigs.getByName("debug")`) if `debug.keystore` is missing.
-  - **Immediate Debug APK Build Workflow (`immediate-build.yml`)**: Triggers an immediate APK build upon any push to `main` / `master` or manually via `workflow_dispatch`. Decodes base64 debug keystores and sets up `.env` dynamically.
-  - **Scheduled Debug APK Build Workflow (`scheduled-build.yml`)**: Runs twice daily (`cron: '0 0,12 * * *'`). Inspects git commit history to detect new builds within the 12-hour window; builds and uploads artifacts if new commits exist, or cleanly skips execution if no changes are present.
+  - **Single Consolidated Production Workflow (`.github/workflows/build-apk.yml`)**: Audited all 6 disparate/copied workflows and unified the best patterns into a single production CI workflow.
+  - **Triggers**: Builds automatically on pushes/PRs to `main` and `master`, on release tags (`v*`), and on manual `workflow_dispatch` with selectable diagnostics mode (`normal`, `verbose`, `debug`).
+  - **Resilient Build Chain**: Configured with JDK 21 (Temurin), Gradle caching, Android SDK 36 tools with automatic retry on license/package installation, base64 keystore decoding with fallback generator, environment `.env` bootstrap, and automatic `gradlew` wrapper provisioning.
+  - **Smart Version-Tagged Artifacts & Failure Diagnostics**: Uses `aapt` inspection to extract real `versionName` and `versionCode` for clear artifact filenames, with automatic diagnostic log capture on failure.
+  - **Clean Workspace**: Removed redundant legacy workflows (`immediate-build.yml`, `scheduled-build.yml`, `build-apk-balanced-hybrid_Version5.yml`, `build-apk-fast-resilient_Version5.yml`, and `build-apk-high-feedback_Version5.yml`).
 - **Biometric Calibration & Voice Matching Fine-Tuning**:
   - **Custom Threshold & Acoustic Controls**: Integrated configurable parameters for Acoustic Matching Sensitivity (`Strict`, `Balanced`, `High Recall`), Reference Audio Slice Duration (`5s`, `10s`, `15s`), Max Bundled Reference Speaker Profiles (`3`, `5`, `10`), and Acoustic Spectrum Analysis Profiles (`Standard`, `Enhanced Harmonic`, `Noise Suppressed`).
   - **Persistent Settings & Prompt Injection**: Calibration choices persist in `SharedPreferences` and dynamically instruct `MainViewModel` and `AudioSliceExtractor` to tune audio slice extraction parameters and inject strict/high-recall matching rules directly into Gemini prompt payloads.
@@ -148,8 +149,7 @@
 ---
 
 ## [Files]
-- `.github/workflows/immediate-build.yml`: Workflow that triggers an immediate debug APK build on push or manual trigger.
-- `.github/workflows/scheduled-build.yml`: Workflow scheduled twice daily that builds a debug APK if new commits are detected.
+- `.github/workflows/build-apk.yml`: Consolidated production CI workflow with automated triggers, JDK 21, Android SDK 36, dynamic versioned artifact naming, and failure diagnostics.
 - `metadata.json`: Application metadata and platform capabilities for AI Studio.
 - `app/build.gradle.kts`: Gradle build script with dependencies for Compose, Room, Retrofit, and Firebase.
 - `app/src/main/AndroidManifest.xml`: Android application manifest declaring permissions and activities.
