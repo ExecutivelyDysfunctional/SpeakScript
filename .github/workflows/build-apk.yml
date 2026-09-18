@@ -37,7 +37,6 @@ jobs:
     timeout-minutes: 30
 
     env:
-      BUILD_TOOLS_VERSION: '36.0.0'
       DISPATCH_DIAGNOSTICS: ${{ inputs.diagnostics || 'normal' }}
       COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
 
@@ -55,35 +54,20 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Accept Android SDK licenses
+      - name: Accept Android SDK licenses and configure platform components
         shell: bash
         run: |
           set -euo pipefail
+          echo "Accepting Android SDK licenses..."
           yes | sdkmanager --licenses >/dev/null || true
+          echo "Ensuring platform tools and platforms are up to date..."
+          sdkmanager "platform-tools" "platforms;android-36" || true
 
-      - name: Install Android SDK components
-        shell: bash
-        run: |
-          set -euo pipefail
-          packages=(
-            "platform-tools"
-            "platforms;android-36"
-            "build-tools;${BUILD_TOOLS_VERSION}"
-          )
-          for attempt in 1 2 3; do
-            if sdkmanager "${packages[@]}"; then
-              exit 0
-            fi
-            if [ "$attempt" -lt 3 ]; then
-              echo "Android SDK installation failed; retrying in 10s (attempt $((attempt + 1))/3)..."
-              sleep 10
-            fi
-          done
-          echo "Android SDK installation failed after 3 attempts."
-          exit 1
-
-      - name: Set up Gradle Action
+      - name: Set up Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          validate-wrappers: false
 
       - name: Prepare Keystore and Environment Secrets
         shell: bash
@@ -112,10 +96,10 @@ jobs:
         shell: bash
         run: |
           if [ ! -f "./gradlew" ]; then
-            echo "Generating gradlew wrapper..."
-            gradle wrapper
+            echo "Generating Gradle wrapper files..."
+            gradle wrapper --gradle-version 9.3.1 --distribution-type bin
           fi
-          chmod +x ./gradlew
+          chmod +x ./gradlew || true
 
       - name: Configure Gradle Build Flags
         id: build_mode
@@ -136,6 +120,7 @@ jobs:
                 assembleDebug
                 --no-daemon
                 --console=plain
+                --stacktrace
               )
               ;;
             verbose)
@@ -175,7 +160,7 @@ jobs:
         run: |
           set -o pipefail
           echo "Executing Gradle in '${{ steps.build_mode.outputs.mode }}' mode..."
-          echo "Arguments: ${{ steps.build_mode.outputs.args }}"
+          echo "Command: ./gradlew ${{ steps.build_mode.outputs.args }}"
           ./gradlew ${{ steps.build_mode.outputs.args }} 2>&1 | tee build-output.log
 
       - name: Verify APK output
@@ -200,13 +185,14 @@ jobs:
           shopt -s nullglob
           apk_files=(app/build/outputs/apk/debug/*.apk)
           apk="${apk_files[0]}"
-          aapt="$ANDROID_HOME/build-tools/${BUILD_TOOLS_VERSION}/aapt"
 
           version_name="1.0"
           version_code="1"
 
-          if [ -x "$aapt" ]; then
-            badging="$("$aapt" dump badging "$apk" 2>/dev/null || true)"
+          # Dynamically locate aapt from any installed build-tools
+          aapt_bin="$(find "$ANDROID_HOME/build-tools" -name aapt -type f 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -n "$aapt_bin" ] && [ -x "$aapt_bin" ]; then
+            badging="$("$aapt_bin" dump badging "$apk" 2>/dev/null || true)"
             parsed_vn="$(printf '%s\n' "$badging" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n 1)"
             parsed_vc="$(printf '%s\n' "$badging" | sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" | head -n 1)"
             [ -n "$parsed_vn" ] && version_name="$parsed_vn"
@@ -233,6 +219,61 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Extract and Log Failed Section
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          echo "::group::❌ FAILING SECTION DETAILS"
+          echo "========================================================"
+          echo "             BUILD FAILURE SECTION SUMMARY              "
+          echo "========================================================"
+
+          # Initialize Step Summary Header
+          {
+            echo "## ❌ Build APK Failure Summary"
+            echo "- **Workflow Run:** #$GITHUB_RUN_NUMBER"
+            echo "- **Trigger:** \`$GITHUB_EVENT_NAME\` (\`$GITHUB_REF_NAME\` @ \`${GITHUB_SHA:0:7}\`)"
+            echo "- **Diagnostics Mode:** \`${{ steps.build_mode.outputs.mode || 'normal' }}\`"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Extract failing section from build-output.log
+          if [ -f "build-output.log" ]; then
+            echo "--- Extracting Gradle failure section ---"
+            
+            # Primary extraction: "* What went wrong:" block to end of failure notes
+            sed -n '/\* What went wrong:/,$p' build-output.log > failure-section.log
+            
+            # Fallback 1: grep around keywords if structured block is absent
+            if [ ! -s "failure-section.log" ]; then
+              grep -E -C 5 "(FAILURE:|BUILD FAILED|Execution failed for task|e: |Compilation error|error: )" build-output.log > failure-section.log || true
+            fi
+            
+            # Fallback 2: grab last 80 lines
+            if [ ! -s "failure-section.log" ]; then
+              tail -n 80 build-output.log > failure-section.log
+            fi
+
+            cat failure-section.log
+
+            {
+              echo "### 🔍 Specific Failing Section & Error Log"
+              echo '```text'
+              cat failure-section.log | head -n 120
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No build-output.log found. The build failed before Gradle execution." | tee failure-section.log
+            {
+              echo "### ⚠️ Pre-Build Failure"
+              echo "The failure occurred during environment setup before Gradle executed."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          
+          echo "========================================================"
+          echo "::endgroup::"
 
       - name: Collect diagnostics on failure
         if: failure()
@@ -268,10 +309,12 @@ jobs:
         with:
           name: ${{ github.event.repository.name || 'build' }}-run-${{ github.run_number }}-failure-diagnostics
           path: |
+            failure-section.log
             build-output.log
             diagnostics.txt
             app/build/reports/
             app/build/outputs/logs/
           if-no-files-found: warn
           retention-days: 14
+
 
