@@ -1216,13 +1216,13 @@ class MainViewModel : ViewModel() {
                     return AudioFileInfo(mimeType = "audio/mp3", extension = "mp3", normalizedMimeForGemini = "audio/mp3")
                 }
             }
-            if (bytes[0] == 'O'.toByte() && bytes[1] == 'g'.toByte() && bytes[2] == 'g'.toByte() && bytes[3] == 'S'.toByte()) {
+            if (bytes[0] == 'O'.code.toByte() && bytes[1] == 'g'.code.toByte() && bytes[2] == 'g'.code.toByte() && bytes[3] == 'S'.code.toByte()) {
                 return AudioFileInfo(mimeType = "audio/ogg", extension = "ogg", normalizedMimeForGemini = "audio/ogg")
             }
-            if (bytes[0] == 'f'.toByte() && bytes[1] == 'L'.toByte() && bytes[2] == 'a'.toByte() && bytes[3] == 'C'.toByte()) {
+            if (bytes[0] == 'f'.code.toByte() && bytes[1] == 'L'.code.toByte() && bytes[2] == 'a'.code.toByte() && bytes[3] == 'C'.code.toByte()) {
                 return AudioFileInfo(mimeType = "audio/flac", extension = "flac", normalizedMimeForGemini = "audio/flac")
             }
-            if (bytes.size >= 5 && bytes[0] == '#'.toByte() && bytes[1] == '!'.toByte() && bytes[2] == 'A'.toByte() && bytes[3] == 'M'.toByte() && bytes[4] == 'R'.toByte()) {
+            if (bytes.size >= 5 && bytes[0] == '#'.code.toByte() && bytes[1] == '!'.code.toByte() && bytes[2] == 'A'.code.toByte() && bytes[3] == 'M'.code.toByte() && bytes[4] == 'R'.code.toByte()) {
                 return AudioFileInfo(mimeType = "audio/amr", extension = "amr", normalizedMimeForGemini = "audio/amr")
             }
         }
@@ -1273,21 +1273,21 @@ class MainViewModel : ViewModel() {
 
     private fun sanitizeMimeTypeForGemini(mimeType: String, bytes: ByteArray?): String {
         if (bytes != null && bytes.size >= 8) {
-            val isFtyp = (bytes[4] == 'f'.toByte() && bytes[5] == 't'.toByte() && bytes[6] == 'y'.toByte() && bytes[7] == 'p'.toByte()) ||
-                    (bytes[0] == 'f'.toByte() && bytes[1] == 't'.toByte() && bytes[2] == 'y'.toByte() && bytes[3] == 'p'.toByte())
+            val isFtyp = (bytes[4] == 'f'.code.toByte() && bytes[5] == 't'.code.toByte() && bytes[6] == 'y'.code.toByte() && bytes[7] == 'p'.code.toByte()) ||
+                    (bytes[0] == 'f'.code.toByte() && bytes[1] == 't'.code.toByte() && bytes[2] == 'y'.code.toByte() && bytes[3] == 'p'.code.toByte())
             if (isFtyp) {
                 return "audio/m4a"
             }
-            if (bytes[0] == 'R'.toByte() && bytes[1] == 'I'.toByte() && bytes[2] == 'F'.toByte() && bytes[3] == 'F'.toByte()) {
+            if (bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()) {
                 return "audio/wav"
             }
-            if (bytes[0] == 'I'.toByte() && bytes[1] == 'D'.toByte() && bytes[2] == '3'.toByte()) {
+            if (bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() && bytes[2] == '3'.code.toByte()) {
                 return "audio/mp3"
             }
-            if (bytes[0] == 'O'.toByte() && bytes[1] == 'g'.toByte() && bytes[2] == 'g'.toByte() && bytes[3] == 'S'.toByte()) {
+            if (bytes[0] == 'O'.code.toByte() && bytes[1] == 'g'.code.toByte() && bytes[2] == 'g'.code.toByte() && bytes[3] == 'S'.code.toByte()) {
                 return "audio/ogg"
             }
-            if (bytes[0] == 'f'.toByte() && bytes[1] == 'L'.toByte() && bytes[2] == 'a'.toByte() && bytes[3] == 'C'.toByte()) {
+            if (bytes[0] == 'f'.code.toByte() && bytes[1] == 'L'.code.toByte() && bytes[2] == 'a'.code.toByte() && bytes[3] == 'C'.code.toByte()) {
                 return "audio/flac"
             }
         }

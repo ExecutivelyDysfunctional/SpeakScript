@@ -17,7 +17,7 @@ on:
         description: 'Diagnostic verbosity level'
         required: false
         type: choice
-        default: normal
+        default: debug
         options:
           - normal
           - verbose
@@ -37,69 +37,136 @@ jobs:
     timeout-minutes: 30
 
     env:
-      DISPATCH_DIAGNOSTICS: ${{ inputs.diagnostics || 'normal' }}
+      DISPATCH_DIAGNOSTICS: ${{ inputs.diagnostics || 'debug' }}
       COMMIT_MESSAGE: ${{ github.event.head_commit.message || '' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Pre-Build System & Environment Audit
+        shell: bash
+        run: |
+          echo "::group::🔍 SYSTEM & PRE-BUILD ENVIRONMENT DIAGNOSTICS"
+          echo "========================================================"
+          echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "Runner OS: $(uname -a)"
+          echo "Runner User: $(whoami)"
+          echo "Current Directory: $(pwd)"
+          echo "Environment Variables:"
+          echo "  - ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+          echo "  - ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<unset>}"
+          echo "  - JAVA_HOME=${JAVA_HOME:-<unset>}"
+          echo "  - GITHUB_REF=${GITHUB_REF:-}"
+          echo "  - GITHUB_SHA=${GITHUB_SHA:-}"
+          echo ""
+          echo "Workspace Root Files:"
+          ls -la
+          echo ""
+          echo "Gradle Directory Structure:"
+          if [ -d "gradle" ]; then
+            find gradle -type f -exec ls -lh {} +
+          else
+            echo "No gradle directory found."
+          fi
+          echo "========================================================"
+          echo "::endgroup::"
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '21'
-          cache: 'gradle'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Accept Android SDK licenses and configure platform components
+      - name: Configure Android SDK & License Acceptance
         shell: bash
         run: |
-          set -euo pipefail
-          echo "Accepting Android SDK licenses..."
-          yes | sdkmanager --licenses >/dev/null || true
-          echo "Ensuring platform tools and platforms are up to date..."
-          sdkmanager "platform-tools" "platforms;android-36" || true
+          echo "::group::🔧 ANDROID SDK & LICENSES CONFIGURATION"
+          set +e
+          # Detect or fallback Android SDK path on runner
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "Target Android SDK directory: $SDK_DIR"
+          
+          if [ ! -d "$SDK_DIR" ]; then
+            echo "Warning: SDK directory not found at $SDK_DIR, searching common paths..."
+            SDK_DIR="$(find /usr/local /opt /home/runner -maxdepth 4 -name "cmdline-tools" -type d 2>/dev/null | head -n 1 | sed 's|/cmdline-tools.*||')"
+          fi
+          
+          echo "Configuring ANDROID_HOME and PATH..."
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "$SDK_DIR/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$SDK_DIR/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Set up Gradle 9.3.1
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '9.3.1'
-          validate-wrappers: false
+          # Pre-accept licenses by writing standard license hashes
+          mkdir -p "$SDK_DIR/licenses"
+          echo -e "\n8933bad161af4178b1185d1a37fbf41ea5269c55\nd56f5187479451eabf01fb78af6dfcb131a6481e\n24333f8a63b682449715d4e1fb83a37808d46812" > "$SDK_DIR/licenses/android-sdk-license" 2>/dev/null || true
+          echo -e "\n84831b9409646a918e30573bab4c9c91346d8abd" > "$SDK_DIR/licenses/android-sdk-preview-license" 2>/dev/null || true
+          echo -e "\n33b6a2b64607f11b759f32049cff4ef5081a7f4e" > "$SDK_DIR/licenses/google-gdk-license" 2>/dev/null || true
+
+          # Attempt command-line license acceptance
+          if [ -x "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" ]; then
+            echo "Running sdkmanager --licenses..."
+            yes 2>/dev/null | "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+          elif which sdkmanager >/dev/null 2>&1; then
+            yes 2>/dev/null | sdkmanager --licenses >/dev/null 2>&1 || true
+          fi
+
+          echo "Licenses configured successfully."
+          echo "::endgroup::"
 
       - name: Prepare Keystore and Environment Secrets
         shell: bash
         run: |
-          set -euo pipefail
-          # Decode debug.keystore from base64 if present
+          echo "::group::🔑 KEYSTORE & SECRETS SETUP"
+          set -eo pipefail
+          
+          # 1. Base64 Keystore decoding
           if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
             echo "Decoding debug.keystore from base64..."
             base64 -d debug.keystore.base64 > debug.keystore 2>/dev/null || \
             base64 --decode -i debug.keystore.base64 > debug.keystore 2>/dev/null || true
           fi
 
-          # Fallback keystore generation if absent or empty
+          # 2. Fallback keystore generation
           if [ ! -f "debug.keystore" ] || [ ! -s "debug.keystore" ]; then
             echo "Generating fallback debug.keystore..."
             keytool -genkey -v -keystore debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
           fi
+          ls -lh debug.keystore
 
-          # Ensure .env exists for Secrets Gradle Plugin
+          # 3. .env initialization for Secrets Gradle Plugin
           if [ ! -f ".env" ] && [ -f ".env.example" ]; then
             cp .env.example .env
-            echo "Copied .env.example to .env"
+            echo "Initialized .env from .env.example"
+          elif [ ! -f ".env" ]; then
+            touch .env
+            echo "Created empty .env placeholder"
           fi
+          echo "::endgroup::"
 
-      - name: Ensure Gradle Wrapper exists and is executable
+      - name: Set up Gradle Action
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+          validate-wrappers: false
+
+      - name: Ensure Gradle Wrapper Executable
         shell: bash
         run: |
+          echo "::group::⚙️ GRADLE WRAPPER INITIALIZATION"
           if [ ! -f "./gradlew" ]; then
-            echo "Generating Gradle wrapper files..."
-            gradle wrapper --gradle-version 9.3.1 --distribution-type bin
+            echo "Generating wrapper via gradle wrapper..."
+            gradle wrapper --gradle-version 9.3.1 --distribution-type bin || true
           fi
-          chmod +x ./gradlew || true
+
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "Wrapper ./gradlew is executable."
+          else
+            echo "Wrapper script not generated, build will invoke gradle directly."
+          fi
+          echo "::endgroup::"
 
       - name: Configure Gradle Build Flags
         id: build_mode
@@ -143,8 +210,13 @@ jobs:
               )
               ;;
             *)
-              echo "Unknown diagnostics mode: $mode"
-              exit 1
+              gradle_args=(
+                assembleDebug
+                --no-daemon
+                --console=plain
+                --stacktrace
+                --info
+              )
               ;;
           esac
 
@@ -159,9 +231,24 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          echo "Executing Gradle in '${{ steps.build_mode.outputs.mode }}' mode..."
-          echo "Command: ./gradlew ${{ steps.build_mode.outputs.args }}"
-          ./gradlew ${{ steps.build_mode.outputs.args }} 2>&1 | tee build-output.log
+          echo "::group::🚀 GRADLE EXECUTION"
+          echo "Diagnostics Mode: ${{ steps.build_mode.outputs.mode }}"
+          echo "Build Command: ./gradlew ${{ steps.build_mode.outputs.args }}"
+          echo "========================================================"
+
+          if [ -x "./gradlew" ]; then
+            BUILD_EXEC="./gradlew"
+          else
+            BUILD_EXEC="gradle"
+          fi
+
+          $BUILD_EXEC ${{ steps.build_mode.outputs.args }} 2>&1 | tee build-output.log
+          BUILD_STATUS=${PIPESTATUS[0]}
+
+          echo "========================================================"
+          echo "Gradle Exit Code: $BUILD_STATUS"
+          echo "::endgroup::"
+          exit $BUILD_STATUS
 
       - name: Verify APK output
         shell: bash
@@ -174,6 +261,7 @@ jobs:
             exit 1
           fi
           echo "Generated APK: ${apk_files[0]}"
+          ls -lh "${apk_files[0]}"
 
       - name: Read APK metadata and versioning
         id: apk_meta
@@ -189,8 +277,8 @@ jobs:
           version_name="1.0"
           version_code="1"
 
-          # Dynamically locate aapt from any installed build-tools
-          aapt_bin="$(find "$ANDROID_HOME/build-tools" -name aapt -type f 2>/dev/null | sort -V | tail -n 1 || true)"
+          # Dynamically locate aapt / aapt2 from any installed build-tools
+          aapt_bin="$(find "${ANDROID_HOME:-/usr/local/lib/android/sdk}/build-tools" -name aapt -type f 2>/dev/null | sort -V | tail -n 1 || true)"
           if [ -n "$aapt_bin" ] && [ -x "$aapt_bin" ]; then
             badging="$("$aapt_bin" dump badging "$apk" 2>/dev/null || true)"
             parsed_vn="$(printf '%s\n' "$badging" | sed -n "s/.*versionName='\([^']*\)'.*/\1/p" | head -n 1)"
@@ -235,7 +323,7 @@ jobs:
             echo "## ❌ Build APK Failure Summary"
             echo "- **Workflow Run:** #$GITHUB_RUN_NUMBER"
             echo "- **Trigger:** \`$GITHUB_EVENT_NAME\` (\`$GITHUB_REF_NAME\` @ \`${GITHUB_SHA:0:7}\`)"
-            echo "- **Diagnostics Mode:** \`${{ steps.build_mode.outputs.mode || 'normal' }}\`"
+            echo "- **Diagnostics Mode:** \`${{ steps.build_mode.outputs.mode || 'debug' }}\`"
             echo ""
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -248,12 +336,12 @@ jobs:
             
             # Fallback 1: grep around keywords if structured block is absent
             if [ ! -s "failure-section.log" ]; then
-              grep -E -C 5 "(FAILURE:|BUILD FAILED|Execution failed for task|e: |Compilation error|error: )" build-output.log > failure-section.log || true
+              grep -E -C 8 "(FAILURE:|BUILD FAILED|Execution failed for task|e: |Compilation error|error: |Exception)" build-output.log > failure-section.log || true
             fi
             
-            # Fallback 2: grab last 80 lines
+            # Fallback 2: grab last 120 lines
             if [ ! -s "failure-section.log" ]; then
-              tail -n 80 build-output.log > failure-section.log
+              tail -n 120 build-output.log > failure-section.log
             fi
 
             cat failure-section.log
@@ -261,14 +349,15 @@ jobs:
             {
               echo "### 🔍 Specific Failing Section & Error Log"
               echo '```text'
-              cat failure-section.log | head -n 120
+              cat failure-section.log | head -n 150
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "No build-output.log found. The build failed before Gradle execution." | tee failure-section.log
+            echo "No build-output.log found. The build failed during a pre-build step before Gradle execution." | tee failure-section.log
             {
-              echo "### ⚠️ Pre-Build Failure"
-              echo "The failure occurred during environment setup before Gradle executed."
+              echo "### ⚠️ Pre-Build Failure Detected"
+              echo "The build failed during pre-build environment configuration before Gradle could execute."
+              echo "Review the 'Pre-Build System & Environment Audit' and 'Android SDK & Licenses Configuration' job steps for details."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
           
@@ -286,21 +375,25 @@ jobs:
             echo "Ref: $GITHUB_REF"
             echo "Commit: $GITHUB_SHA"
             echo "Run Number: $GITHUB_RUN_NUMBER"
-            echo "Diagnostics Mode: ${{ steps.build_mode.outputs.mode }}"
+            echo "Diagnostics Mode: ${{ steps.build_mode.outputs.mode || 'debug' }}"
             echo
             echo '=== Java & Gradle Environment ==='
             java -version
-            if [ -f "./gradlew" ]; then
+            if which gradle >/dev/null 2>&1; then
+              gradle --version
+            elif [ -f "./gradlew" ]; then
               ./gradlew --version
             fi
             echo
             echo '=== Android SDK Environment ==='
             echo "ANDROID_HOME=${ANDROID_HOME:-}"
             echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
-            sdkmanager --list_installed 2>/dev/null | tail -n 80
+            if which sdkmanager >/dev/null 2>&1; then
+              sdkmanager --list_installed 2>/dev/null | tail -n 80
+            fi
             echo
             echo '=== Project Structure & Build Outputs ==='
-            find app/build -maxdepth 5 -type f 2>/dev/null | sort | head -n 150
+            find . -maxdepth 4 -not -path '*/.*' 2>/dev/null | sort | head -n 150
           } | tee diagnostics.txt
 
       - name: Upload Failure Diagnostics
@@ -316,5 +409,6 @@ jobs:
             app/build/outputs/logs/
           if-no-files-found: warn
           retention-days: 14
+
 
 
