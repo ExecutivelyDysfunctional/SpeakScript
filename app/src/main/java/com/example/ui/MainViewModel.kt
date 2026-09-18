@@ -43,6 +43,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import com.google.android.gms.auth.GoogleAuthUtil
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.example.util.AudioSliceExtractor
+import retrofit2.HttpException
 
 
 typealias TranscriptionRecord = com.example.db.Transcription
@@ -56,6 +57,32 @@ data class AudioFileInfo(
 class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    private fun extractErrorMessage(e: Throwable): String {
+        if (e is HttpException) {
+            val code = e.code()
+            val errorBody = try {
+                e.response()?.errorBody()?.string()
+            } catch (ex: Exception) {
+                null
+            }
+            if (!errorBody.isNullOrBlank()) {
+                try {
+                    val json = JSONObject(errorBody)
+                    val errorObj = json.optJSONObject("error")
+                    val msg = errorObj?.optString("message")
+                    val status = errorObj?.optString("status")
+                    if (!msg.isNullOrBlank()) {
+                        return "Gemini API Error ($code $status): $msg"
+                    }
+                } catch (ex: Exception) {
+                    return "HTTP $code: $errorBody"
+                }
+            }
+            return "HTTP $code ${e.message()}"
+        }
+        return e.localizedMessage ?: e.message ?: "Unknown error"
+    }
 
     private fun getAuthSafe(): FirebaseAuth? {
         return try {
@@ -778,7 +805,8 @@ class MainViewModel : ViewModel() {
                         successCount++
                     }
                 } catch (e: Exception) {
-                    e.printStackTrace()
+                    val errorMsg = extractErrorMessage(e)
+                    _uiState.value = _uiState.value.copy(error = "Batch file $fileNum error: $errorMsg")
                 }
             }
 
@@ -835,8 +863,9 @@ class MainViewModel : ViewModel() {
                 }
                 if (slice != null) {
                     val base64Slice = Base64.encodeToString(slice.bytes, Base64.NO_WRAP)
+                    val sanitizedSliceMime = sanitizeMimeTypeForGemini(slice.mimeType, slice.bytes)
                     biometricParts.add(Part(text = "=== VERIFIED REFERENCE VOICE SAMPLE: ${speaker.name} (${speaker.relationshipOrRole ?: "Registered Individual"}) ===\nAcoustic reference slice (${slice.durationMs / 1000}s)."))
-                    biometricParts.add(Part(inlineData = InlineData(mimeType = slice.mimeType, data = base64Slice)))
+                    biometricParts.add(Part(inlineData = InlineData(mimeType = sanitizedSliceMime, data = base64Slice)))
                     recognizedRosterNames.add(speaker.name)
                 }
             }
@@ -855,7 +884,7 @@ class MainViewModel : ViewModel() {
 
             val request = GenerateContentRequest(contents = listOf(Content(parts = contentParts)))
             val response = RetrofitClient.service.generateContentStream(
-                model = "gemini-3.5-flash",
+                model = "gemini-2.5-flash",
                 apiKey = apiKey,
                 request = request
             )
@@ -937,7 +966,7 @@ class MainViewModel : ViewModel() {
                 timestamp = recordTimestamp,
                 summary = summary,
                 category = category,
-                modelName = "Gemini 3.5 Flash",
+                modelName = "Gemini 2.5 Flash",
                 driveFileId = driveFileId,
                 locationName = locationName,
                 activeSpeakersCsv = activeSpeakersCsv,
@@ -962,7 +991,9 @@ class MainViewModel : ViewModel() {
                 )
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            val errorMsg = extractErrorMessage(e)
+            _uiState.value = _uiState.value.copy(error = "Transcription error: $errorMsg")
+            throw e
         }
     }
 
@@ -1230,16 +1261,16 @@ class MainViewModel : ViewModel() {
         val name = displayName ?: uri?.lastPathSegment ?: ""
         val lowerName = name.lowercase()
         when {
-            lowerName.endsWith(".m4a") -> return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/m4a")
+            lowerName.endsWith(".m4a") -> return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/aac")
             lowerName.endsWith(".aac") -> return AudioFileInfo(mimeType = "audio/aac", extension = "aac", normalizedMimeForGemini = "audio/aac")
             lowerName.endsWith(".mp3") -> return AudioFileInfo(mimeType = "audio/mp3", extension = "mp3", normalizedMimeForGemini = "audio/mp3")
             lowerName.endsWith(".wav") -> return AudioFileInfo(mimeType = "audio/wav", extension = "wav", normalizedMimeForGemini = "audio/wav")
             lowerName.endsWith(".flac") -> return AudioFileInfo(mimeType = "audio/flac", extension = "flac", normalizedMimeForGemini = "audio/flac")
             lowerName.endsWith(".ogg") || lowerName.endsWith(".opus") -> return AudioFileInfo(mimeType = "audio/ogg", extension = "ogg", normalizedMimeForGemini = "audio/ogg")
-            lowerName.endsWith(".mp4") || lowerName.endsWith(".m4b") -> return AudioFileInfo(mimeType = "audio/mp4", extension = "mp4", normalizedMimeForGemini = "audio/mp4")
-            lowerName.endsWith(".3gp") || lowerName.endsWith(".3gpp") -> return AudioFileInfo(mimeType = "audio/3gpp", extension = "3gp", normalizedMimeForGemini = "audio/3gpp")
-            lowerName.endsWith(".amr") -> return AudioFileInfo(mimeType = "audio/amr", extension = "amr", normalizedMimeForGemini = "audio/amr")
-            lowerName.endsWith(".wma") -> return AudioFileInfo(mimeType = "audio/x-ms-wma", extension = "wma", normalizedMimeForGemini = "audio/x-ms-wma")
+            lowerName.endsWith(".mp4") || lowerName.endsWith(".m4b") -> return AudioFileInfo(mimeType = "audio/mp4", extension = "mp4", normalizedMimeForGemini = "audio/aac")
+            lowerName.endsWith(".3gp") || lowerName.endsWith(".3gpp") -> return AudioFileInfo(mimeType = "audio/3gpp", extension = "3gp", normalizedMimeForGemini = "audio/aac")
+            lowerName.endsWith(".amr") -> return AudioFileInfo(mimeType = "audio/amr", extension = "amr", normalizedMimeForGemini = "audio/aac")
+            lowerName.endsWith(".wma") -> return AudioFileInfo(mimeType = "audio/x-ms-wma", extension = "wma", normalizedMimeForGemini = "audio/aac")
             lowerName.endsWith(".aiff") || lowerName.endsWith(".aif") -> return AudioFileInfo(mimeType = "audio/aiff", extension = "aiff", normalizedMimeForGemini = "audio/aiff")
         }
 
@@ -1253,6 +1284,14 @@ class MainViewModel : ViewModel() {
                     "audio/x-aac" -> "audio/aac"
                     else -> crType
                 }
+                val geminiMime = when {
+                    normalized.contains("wav") -> "audio/wav"
+                    normalized.contains("mp3") || normalized.contains("mpeg") -> "audio/mp3"
+                    normalized.contains("flac") -> "audio/flac"
+                    normalized.contains("ogg") || normalized.contains("opus") -> "audio/ogg"
+                    normalized.contains("aiff") -> "audio/aiff"
+                    else -> "audio/aac"
+                }
                 val ext = when {
                     normalized.contains("wav") -> "wav"
                     normalized.contains("mp3") || normalized.contains("mpeg") -> "mp3"
@@ -1264,11 +1303,11 @@ class MainViewModel : ViewModel() {
                     normalized.contains("amr") -> "amr"
                     else -> "m4a"
                 }
-                return AudioFileInfo(mimeType = normalized, extension = ext, normalizedMimeForGemini = normalized)
+                return AudioFileInfo(mimeType = normalized, extension = ext, normalizedMimeForGemini = geminiMime)
             }
         }
 
-        return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/m4a")
+        return AudioFileInfo(mimeType = "audio/m4a", extension = "m4a", normalizedMimeForGemini = "audio/aac")
     }
 
     private fun sanitizeMimeTypeForGemini(mimeType: String, bytes: ByteArray?): String {
@@ -1276,7 +1315,7 @@ class MainViewModel : ViewModel() {
             val isFtyp = (bytes[4] == 'f'.code.toByte() && bytes[5] == 't'.code.toByte() && bytes[6] == 'y'.code.toByte() && bytes[7] == 'p'.code.toByte()) ||
                     (bytes[0] == 'f'.code.toByte() && bytes[1] == 't'.code.toByte() && bytes[2] == 'y'.code.toByte() && bytes[3] == 'p'.code.toByte())
             if (isFtyp) {
-                return "audio/m4a"
+                return "audio/aac"
             }
             if (bytes[0] == 'R'.code.toByte() && bytes[1] == 'I'.code.toByte() && bytes[2] == 'F'.code.toByte() && bytes[3] == 'F'.code.toByte()) {
                 return "audio/wav"
@@ -1293,11 +1332,14 @@ class MainViewModel : ViewModel() {
         }
 
         return when (mimeType.lowercase()) {
-            "audio/x-wav" -> "audio/wav"
-            "audio/mpeg" -> "audio/mp3"
-            "audio/x-m4a", "audio/mp4a-latm" -> "audio/m4a"
-            "audio/x-aac" -> "audio/aac"
-            else -> if (mimeType.isBlank()) "audio/m4a" else mimeType
+            "audio/x-wav", "audio/wav" -> "audio/wav"
+            "audio/mpeg", "audio/mp3" -> "audio/mp3"
+            "audio/x-m4a", "audio/mp4a-latm", "audio/m4a", "audio/mp4", "audio/3gpp", "audio/amr", "audio/x-ms-wma" -> "audio/aac"
+            "audio/x-aac", "audio/aac" -> "audio/aac"
+            "audio/ogg", "audio/opus" -> "audio/ogg"
+            "audio/flac" -> "audio/flac"
+            "audio/aiff", "audio/x-aiff" -> "audio/aiff"
+            else -> if (mimeType.isBlank()) "audio/aac" else "audio/aac"
         }
     }
 
@@ -1333,7 +1375,8 @@ class MainViewModel : ViewModel() {
                 
                 transcribeAudioBytes(context, bytes, audioInfo.normalizedMimeForGemini, localUriString, customTimestamp, driveFileId, displayName)
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
+                val errorMsg = extractErrorMessage(e)
+                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = errorMsg)
             }
         }
     }
@@ -1395,13 +1438,14 @@ class MainViewModel : ViewModel() {
                     }
                     if (slice != null) {
                         val base64Slice = Base64.encodeToString(slice.bytes, Base64.NO_WRAP)
+                        val sanitizedSliceMime = sanitizeMimeTypeForGemini(slice.mimeType, slice.bytes)
                         biometricParts.add(
                             Part(text = "=== VERIFIED REFERENCE VOICE SAMPLE: ${speaker.name} (${speaker.relationshipOrRole ?: "Registered Individual"}) ===\nThis is a verified Golden Sample reference audio slice (${slice.durationMs / 1000}s) of ${speaker.name}'s voice. Note their vocal acoustic signature, pitch, timbre, tone, and cadence.")
                         )
                         biometricParts.add(
                             Part(
                                 inlineData = InlineData(
-                                    mimeType = slice.mimeType,
+                                    mimeType = sanitizedSliceMime,
                                     data = base64Slice
                                 )
                             )
@@ -1461,7 +1505,7 @@ class MainViewModel : ViewModel() {
                 _uiState.value = _uiState.value.copy(statusMessage = statusDesc, progress = 0.8f)
 
                 val response = RetrofitClient.service.generateContentStream(
-                    model = "gemini-3.5-flash",
+                    model = "gemini-2.5-flash",
                     apiKey = apiKey,
                     request = request
                 )
@@ -1506,7 +1550,7 @@ class MainViewModel : ViewModel() {
                                                     speakerLabels = null,
                                                     audioFilePath = audioUriString,
                                                     timestamp = recordTimestamp,
-                                                    modelName = "Gemini 3.5 Flash",
+                                                    modelName = "Gemini 2.5 Flash",
                                                     driveFileId = driveFileId
                                                 )
                                                 repository?.insert(record)
@@ -1568,7 +1612,7 @@ class MainViewModel : ViewModel() {
                 )
 
                 val summaryResponse = RetrofitClient.service.generateContent(
-                    model = "gemini-3.5-flash",
+                    model = "gemini-2.5-flash",
                     apiKey = apiKey,
                     request = summaryRequest
                 )
@@ -1635,7 +1679,7 @@ class MainViewModel : ViewModel() {
                     audioFilePath = audioUriString,
                     summary = finalSummaryText,
                     timestamp = recordTimestamp,
-                    modelName = "Gemini 3.5 Flash",
+                    modelName = "Gemini 2.5 Flash",
                     driveFileId = driveFileId,
                     sessionTitle = parsedTitle,
                     locationName = locationName,
@@ -1687,7 +1731,8 @@ class MainViewModel : ViewModel() {
                 )
                 
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
+                val errorMsg = extractErrorMessage(e)
+                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = errorMsg)
             }
         }
     }
@@ -1808,11 +1853,12 @@ class MainViewModel : ViewModel() {
                     }
                     if (slice != null) {
                         val base64Slice = Base64.encodeToString(slice.bytes, Base64.NO_WRAP)
+                        val sanitizedSliceMime = sanitizeMimeTypeForGemini(slice.mimeType, slice.bytes)
                         biometricParts.add(
                             Part(text = "=== VERIFIED REFERENCE VOICE SAMPLE: ${speaker.name} (${speaker.relationshipOrRole ?: "Registered Individual"}) ===\nReference ${slice.durationMs / 1000}s audio slice for acoustic vocal matching.")
                         )
                         biometricParts.add(
-                            Part(inlineData = InlineData(mimeType = slice.mimeType, data = base64Slice))
+                            Part(inlineData = InlineData(mimeType = sanitizedSliceMime, data = base64Slice))
                         )
                         recognizedRosterNames.add(speaker.name)
                     }
@@ -1891,7 +1937,7 @@ class MainViewModel : ViewModel() {
                     )
 
                     val response = RetrofitClient.service.generateContentStream(
-                        model = "gemini-3.5-flash",
+                        model = "gemini-2.5-flash",
                         apiKey = apiKey,
                         request = request
                     )
@@ -1937,7 +1983,7 @@ class MainViewModel : ViewModel() {
                         audioFilePath = localUriString,
                         timestamp = customTimestamp,
                         summary = null,
-                        modelName = "Gemini 3.5 Flash",
+                        modelName = "Gemini 2.5 Flash",
                         sessionId = sessionId,
                         partIndex = index,
                         totalParts = totalParts,
@@ -1994,7 +2040,7 @@ class MainViewModel : ViewModel() {
                 )
 
                 val summaryResponse = RetrofitClient.service.generateContent(
-                    model = "gemini-3.5-flash",
+                    model = "gemini-2.5-flash",
                     apiKey = apiKey,
                     request = summaryRequest
                 )
@@ -2035,11 +2081,12 @@ class MainViewModel : ViewModel() {
                 )
 
             } catch (e: Exception) {
+                val errorMsg = extractErrorMessage(e)
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     statusMessage = null,
                     progress = null,
-                    error = "Sequential transcription error: ${e.localizedMessage ?: e.message}"
+                    error = "Sequential transcription error: $errorMsg"
                 )
             }
         }
@@ -2061,7 +2108,7 @@ class MainViewModel : ViewModel() {
                             )
                         )
                         val response = RetrofitClient.service.generateContent(
-                            model = "gemini-3.1-pro-preview",
+                            model = "gemini-2.5-pro",
                             apiKey = apiKey,
                             request = request
                         )
@@ -2179,7 +2226,7 @@ class MainViewModel : ViewModel() {
             speakerLabels = null,
             audioFilePath = audioUriString,
             summary = summary,
-            modelName = "Gemini 3.5 Flash"
+            modelName = "Gemini 2.5 Flash"
         )
         
         viewModelScope.launch {

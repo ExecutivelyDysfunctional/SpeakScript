@@ -134,9 +134,16 @@ object AudioSliceExtractor {
 
             if (tempFile.exists() && tempFile.length() > 200) {
                 val bytes = tempFile.readBytes()
+                val cleanMime = when {
+                    sourceMime.contains("wav") -> "audio/wav"
+                    sourceMime.contains("mp3") || sourceMime.contains("mpeg") -> "audio/mp3"
+                    sourceMime.contains("ogg") || sourceMime.contains("opus") -> "audio/ogg"
+                    sourceMime.contains("flac") -> "audio/flac"
+                    else -> "audio/aac"
+                }
                 return AudioSlice(
                     bytes = bytes,
-                    mimeType = if (sourceMime.contains("aac") || sourceMime.contains("mp4")) "audio/mp4" else sourceMime,
+                    mimeType = cleanMime,
                     durationMs = sliceDurationMs
                 )
             }
