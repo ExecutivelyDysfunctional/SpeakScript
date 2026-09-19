@@ -8,11 +8,21 @@ import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
+import com.example.api.AiConstants
 import com.example.api.Content
 import com.example.api.GeminiApiService
 import com.example.api.GenerateContentRequest
 import com.example.api.GenerationConfig
+import com.example.api.GroqAudioClient
+import com.example.api.GroqClient
 import com.example.api.InlineData
+import com.example.api.OpenAiChatRequest
+import com.example.api.OpenAiContentPart
+import com.example.api.OpenAiInputAudio
+import com.example.api.OpenAiMessage
+import com.example.api.OpenAiMultimodalChatRequest
+import com.example.api.OpenAiMultimodalMessage
+import com.example.api.OpenRouterClient
 import com.example.api.Part
 import com.example.api.RetrofitClient
 import com.example.api.ThinkingConfig
@@ -58,30 +68,270 @@ class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    private fun extractErrorMessage(e: Throwable): String {
+    private fun extractErrorMessage(
+        e: Throwable,
+        providerName: String? = null,
+        endpointCategory: String? = null,
+        apiKeyToMask: String? = null
+    ): String {
+        val provider = providerName ?: when (aiProvider) {
+            AiProvider.GEMINI -> "Gemini API"
+            AiProvider.OPENROUTER -> "OpenRouter API"
+            AiProvider.GROQ -> "Groq API"
+        }
+        val category = endpointCategory ?: "Request"
+
+        fun maskKey(text: String): String {
+            var result = text
+            val key = apiKeyToMask ?: getActiveApiKey()
+            if (key.length > 5) {
+                result = result.replace(key, "***MASKED_KEY***")
+            }
+            if (customApiKey.length > 5) {
+                result = result.replace(customApiKey, "***MASKED_KEY***")
+            }
+            if (openRouterApiKey.length > 5) {
+                result = result.replace(openRouterApiKey, "***MASKED_KEY***")
+            }
+            if (groqApiKey.length > 5) {
+                result = result.replace(groqApiKey, "***MASKED_KEY***")
+            }
+            return result
+        }
+
         if (e is HttpException) {
             val code = e.code()
-            val errorBody = try {
+            val rawErrorBody = try {
                 e.response()?.errorBody()?.string()
             } catch (ex: Exception) {
                 null
             }
+            val errorBody = rawErrorBody?.let { maskKey(it) } ?: ""
+
             if (!errorBody.isNullOrBlank()) {
                 try {
                     val json = JSONObject(errorBody)
                     val errorObj = json.optJSONObject("error")
-                    val msg = errorObj?.optString("message")
-                    val status = errorObj?.optString("status")
+                    val msg = errorObj?.optString("message") ?: json.optString("message").takeIf { it.isNotBlank() }
+                    val status = errorObj?.optString("status") ?: json.optString("code").takeIf { it.isNotBlank() }
                     if (!msg.isNullOrBlank()) {
-                        return "Gemini API Error ($code $status): $msg"
+                        return "$provider Error ($category HTTP $code ${status ?: ""}): $msg".trim()
                     }
                 } catch (ex: Exception) {
-                    return "HTTP $code: $errorBody"
+                    return "$provider Error ($category HTTP $code): $errorBody"
+                }
+                return "$provider Error ($category HTTP $code): $errorBody"
+            }
+            return "$provider Error ($category HTTP $code): ${e.message()}"
+        }
+        val rawMsg = e.localizedMessage ?: e.message ?: "Unknown error"
+        return "$provider Error ($category): ${maskKey(rawMsg)}"
+    }
+
+    private fun getOpenRouterAudioFormat(extension: String): String {
+        return when (extension.lowercase()) {
+            "wav" -> "wav"
+            "mp3" -> "mp3"
+            "m4a", "mp4", "3gp", "amr" -> "m4a"
+            "aac" -> "aac"
+            "ogg" -> "ogg"
+            "flac" -> "flac"
+            else -> "m4a"
+        }
+    }
+
+    private fun getActiveModelDisplayName(): String {
+        return when (aiProvider) {
+            AiProvider.GEMINI -> "Gemini 3.6 Flash"
+            AiProvider.OPENROUTER -> "OpenRouter (${AiConstants.OPENROUTER_DEFAULT_MODEL})"
+            AiProvider.GROQ -> "Groq Whisper Large v3"
+        }
+    }
+
+    private suspend fun executeRoutedTranscriptionStream(
+        apiKey: String,
+        prompt: String,
+        bytes: ByteArray,
+        audioInfo: AudioFileInfo,
+        biometricParts: List<Part>,
+        onChunkReceived: (String) -> Unit
+    ): String {
+        return when (aiProvider) {
+            AiProvider.GEMINI -> {
+                val contentParts = mutableListOf<Part>()
+                contentParts.addAll(biometricParts)
+                contentParts.add(Part(text = prompt))
+                val sanitizedMime = sanitizeMimeTypeForGemini(audioInfo.normalizedMimeForGemini, bytes)
+                contentParts.add(Part(inlineData = InlineData(mimeType = sanitizedMime, data = Base64.encodeToString(bytes, Base64.NO_WRAP))))
+
+                val request = GenerateContentRequest(contents = listOf(Content(parts = contentParts)))
+                val response = RetrofitClient.service.generateContentStream(
+                    model = AiConstants.GEMINI_DEFAULT_MODEL,
+                    apiKey = apiKey,
+                    request = request
+                )
+
+                var accumulated = ""
+                withContext(Dispatchers.IO) {
+                    response.byteStream().bufferedReader().use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            if (line!!.startsWith("data: ")) {
+                                try {
+                                    val jsonStr = line!!.removePrefix("data: ").trim()
+                                    val chunk = JSONObject(jsonStr)
+                                    val candidates = chunk.optJSONArray("candidates")
+                                    if (candidates != null && candidates.length() > 0) {
+                                        val content = candidates.getJSONObject(0).optJSONObject("content")
+                                        val parts = content?.optJSONArray("parts")
+                                        if (parts != null && parts.length() > 0) {
+                                            val textPart = parts.getJSONObject(0).optString("text", "")
+                                            if (textPart.isNotEmpty()) {
+                                                accumulated += textPart
+                                                onChunkReceived(accumulated)
+                                            }
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    // Ignore partial SSE chunk
+                                }
+                            }
+                        }
+                    }
+                }
+                accumulated
+            }
+
+            AiProvider.OPENROUTER -> {
+                if (apiKey.isBlank()) {
+                    throw IllegalStateException("OpenRouter API key is missing. Please save an OpenRouter key in Settings.")
+                }
+                val base64Audio = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                val audioFormat = getOpenRouterAudioFormat(audioInfo.extension)
+
+                val promptPart = OpenAiContentPart(type = "text", text = prompt)
+                val audioPart = OpenAiContentPart(type = "input_audio", input_audio = OpenAiInputAudio(data = base64Audio, format = audioFormat))
+
+                val request = OpenAiMultimodalChatRequest(
+                    model = AiConstants.OPENROUTER_DEFAULT_MODEL,
+                    messages = listOf(
+                        OpenAiMultimodalMessage(
+                            role = "user",
+                            content = listOf(promptPart, audioPart)
+                        )
+                    ),
+                    stream = true
+                )
+
+                val response = OpenRouterClient.service.chatCompletionsMultimodalStream(
+                    authHeader = "Bearer $apiKey",
+                    request = request
+                )
+
+                var accumulated = ""
+                withContext(Dispatchers.IO) {
+                    response.byteStream().bufferedReader().use { reader ->
+                        var line: String?
+                        while (reader.readLine().also { line = it } != null) {
+                            if (line!!.startsWith("data: ")) {
+                                val jsonStr = line!!.removePrefix("data: ").trim()
+                                if (jsonStr == "[DONE]") break
+                                try {
+                                    val chunk = JSONObject(jsonStr)
+                                    val choices = chunk.optJSONArray("choices")
+                                    if (choices != null && choices.length() > 0) {
+                                        val delta = choices.getJSONObject(0).optJSONObject("delta")
+                                        val contentStr = delta?.optString("content")
+                                            ?: choices.getJSONObject(0).optJSONObject("message")?.optString("content")
+                                        if (!contentStr.isNullOrEmpty()) {
+                                            accumulated += contentStr
+                                            onChunkReceived(accumulated)
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    // Ignore chunk parse error
+                                }
+                            }
+                        }
+                    }
+                }
+                accumulated
+            }
+
+            AiProvider.GROQ -> {
+                if (apiKey.isBlank()) {
+                    throw IllegalStateException("Groq API key is missing. Please save a Groq key in Settings.")
+                }
+                val mediaType = audioInfo.mimeType.ifEmpty { "audio/wav" }.toMediaType()
+                val filePart = MultipartBody.Part.createFormData("file", "audio.${audioInfo.extension}", bytes.toRequestBody(mediaType))
+                val modelPart = AiConstants.GROQ_AUDIO_MODEL.toRequestBody("text/plain".toMediaType())
+                val responseFormatPart = "json".toRequestBody("text/plain".toMediaType())
+                val promptPart = if (prompt.isNotBlank()) prompt.take(1000).toRequestBody("text/plain".toMediaType()) else null
+
+                val response = withContext(Dispatchers.IO) {
+                    GroqAudioClient.service.transcribeAudio(
+                        authHeader = "Bearer $apiKey",
+                        file = filePart,
+                        model = modelPart,
+                        responseFormat = responseFormatPart,
+                        prompt = promptPart
+                    )
+                }
+                val text = response.text
+                onChunkReceived(text)
+                text
+            }
+        }
+    }
+
+    private suspend fun executeRoutedSummary(
+        apiKey: String,
+        summaryPrompt: String
+    ): String? {
+        return try {
+            when (aiProvider) {
+                AiProvider.GEMINI -> {
+                    val summaryRequest = GenerateContentRequest(
+                        contents = listOf(Content(parts = listOf(Part(text = summaryPrompt)))),
+                        generationConfig = GenerationConfig(responseMimeType = "application/json")
+                    )
+                    val summaryResponse = RetrofitClient.service.generateContent(
+                        model = AiConstants.GEMINI_DEFAULT_MODEL,
+                        apiKey = apiKey,
+                        request = summaryRequest
+                    )
+                    summaryResponse.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                }
+
+                AiProvider.OPENROUTER -> {
+                    if (apiKey.isBlank()) return null
+                    val request = OpenAiChatRequest(
+                        model = AiConstants.OPENROUTER_DEFAULT_MODEL,
+                        messages = listOf(OpenAiMessage(role = "user", content = summaryPrompt))
+                    )
+                    val response = OpenRouterClient.service.chatCompletions(
+                        authHeader = "Bearer $apiKey",
+                        request = request
+                    )
+                    response.choices?.firstOrNull()?.message?.content
+                }
+
+                AiProvider.GROQ -> {
+                    if (apiKey.isBlank()) return null
+                    val request = OpenAiChatRequest(
+                        model = AiConstants.GROQ_TEXT_MODEL,
+                        messages = listOf(OpenAiMessage(role = "user", content = summaryPrompt))
+                    )
+                    val response = GroqClient.service.chatCompletions(
+                        authHeader = "Bearer $apiKey",
+                        request = request
+                    )
+                    response.choices?.firstOrNull()?.message?.content
                 }
             }
-            return "HTTP $code ${e.message()}"
+        } catch (e: Exception) {
+            null
         }
-        return e.localizedMessage ?: e.message ?: "Unknown error"
     }
 
     private fun getAuthSafe(): FirebaseAuth? {
@@ -876,40 +1126,16 @@ class MainViewModel : ViewModel() {
                 "Please transcribe this audio with speaker labels and timestamps. At the end, output a JSON block with keys: \"summary\", \"category\", \"location\", \"activeSpeakers\", \"mentionedPeople\", and \"diarizationConfidence\" (\"High\", \"Medium\", or \"Low\")."
             }
 
-            val contentParts = mutableListOf<Part>()
-            contentParts.addAll(biometricParts)
-            contentParts.add(Part(text = prompt))
-            val sanitizedMime = sanitizeMimeTypeForGemini(mimeType, bytes)
-            contentParts.add(Part(inlineData = InlineData(mimeType = sanitizedMime, data = base64Audio)))
+            val audioInfo = detectAudioInfo(context, audioUriString?.let { Uri.parse(it) }, bytes, originalFileName)
 
-            val request = GenerateContentRequest(contents = listOf(Content(parts = contentParts)))
-            val response = RetrofitClient.service.generateContentStream(
-                model = "gemini-2.5-flash",
+            val accumulatedText = executeRoutedTranscriptionStream(
                 apiKey = apiKey,
-                request = request
+                prompt = prompt,
+                bytes = bytes,
+                audioInfo = audioInfo,
+                biometricParts = biometricParts,
+                onChunkReceived = { }
             )
-
-            var accumulatedText = ""
-            response.byteStream().bufferedReader().use { reader ->
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    if (line!!.startsWith("data: ")) {
-                        try {
-                            val jsonStr = line!!.removePrefix("data: ").trim()
-                            val jsonObj = JSONObject(jsonStr)
-                            val candidates = jsonObj.optJSONArray("candidates")
-                            if (candidates != null && candidates.length() > 0) {
-                                val content = candidates.getJSONObject(0).optJSONObject("content")
-                                val parts = content?.optJSONArray("parts")
-                                if (parts != null && parts.length() > 0) {
-                                    val textPart = parts.getJSONObject(0).optString("text", "")
-                                    accumulatedText += textPart
-                                }
-                            }
-                        } catch (e: Exception) {}
-                    }
-                }
-            }
 
             val finalTranscriptText = if (accumulatedText.isNotBlank()) accumulatedText else "Transcription unavailable."
             
@@ -966,7 +1192,7 @@ class MainViewModel : ViewModel() {
                 timestamp = recordTimestamp,
                 summary = summary,
                 category = category,
-                modelName = "Gemini 2.5 Flash",
+                modelName = getActiveModelDisplayName(),
                 driveFileId = driveFileId,
                 locationName = locationName,
                 activeSpeakersCsv = activeSpeakersCsv,
@@ -1059,7 +1285,7 @@ class MainViewModel : ViewModel() {
                     timestamp = now - 2 * 3600 * 1000L, // 2 hours ago (Today)
                     summary = "The team discussed the marketing launch date for the new productivity app and agreed on October 15th to allow sufficient time for beta feedback.",
                     category = "Meeting",
-                    modelName = "Gemini 3.5 Flash",
+                    modelName = "Gemini 3.6 Flash",
                     locationName = "Executive Boardroom",
                     activeSpeakersCsv = "Austin Grindy, Alex Rivera",
                     mentionedPeopleCsv = "Sarah Chen"
@@ -1073,7 +1299,7 @@ class MainViewModel : ViewModel() {
                     timestamp = now - 28 * 3600 * 1000L, // ~28 hours ago (Yesterday)
                     summary = "A personal reminder to buy milk, eggs, bread, and pick up dry cleaning after returning from the gym.",
                     category = "Personal",
-                    modelName = "Gemini 3.5 Flash",
+                    modelName = "Gemini 3.6 Flash",
                     locationName = "Home Office",
                     activeSpeakersCsv = "Austin Grindy",
                     mentionedPeopleCsv = null
@@ -1497,20 +1723,13 @@ class MainViewModel : ViewModel() {
                     )
                 )
 
-                val statusDesc = if (recognizedRosterNames.isNotEmpty()) {
-                    "Transcribing with Gemini AI & matching ${recognizedRosterNames.size} Golden Samples..."
-                } else {
-                    "Uploading & Transcribing (Gemini AI)..."
+                val statusDesc = when (aiProvider) {
+                    AiProvider.GEMINI -> if (recognizedRosterNames.isNotEmpty()) "Transcribing with Gemini AI & matching ${recognizedRosterNames.size} Golden Samples..." else "Uploading & Transcribing (Gemini AI)..."
+                    AiProvider.OPENROUTER -> "Uploading & Transcribing (OpenRouter AI)..."
+                    AiProvider.GROQ -> "Transcribing with Groq Whisper AI..."
                 }
                 _uiState.value = _uiState.value.copy(statusMessage = statusDesc, progress = 0.8f)
 
-                val response = RetrofitClient.service.generateContentStream(
-                    model = "gemini-2.5-flash",
-                    apiKey = apiKey,
-                    request = request
-                )
-                
-                var accumulatedText = ""
                 var userId = "local_user"
                 try {
                     userId = getAuthSafe()?.currentUser?.uid ?: "local_user"
@@ -1518,55 +1737,42 @@ class MainViewModel : ViewModel() {
                 val transcriptionId = UUID.randomUUID().toString()
                 var lastSaveTime = System.currentTimeMillis()
                 val recordTimestamp = customTimestamp ?: System.currentTimeMillis()
-                
-                withContext(Dispatchers.IO) {
-                    response.byteStream().bufferedReader().use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            if (line!!.startsWith("data: ")) {
-                                try {
-                                    val jsonStr = line!!.substring(6)
-                                    val chunk = JSONObject(jsonStr)
-                                    val candidates = chunk.optJSONArray("candidates")
-                                    if (candidates != null && candidates.length() > 0) {
-                                        val content = candidates.getJSONObject(0).optJSONObject("content")
-                                        val parts = content?.optJSONArray("parts")
-                                        if (parts != null && parts.length() > 0) {
-                                            val textPart = parts.getJSONObject(0).optString("text", "")
-                                            accumulatedText += textPart
-                                            
-                                            _uiState.value = _uiState.value.copy(
-                                                lastTranscription = accumulatedText,
-                                                progress = 0.8f
-                                            )
-                                            
-                                            val currentTime = System.currentTimeMillis()
-                                            if (currentTime - lastSaveTime > 2000) {
-                                                lastSaveTime = currentTime
-                                                val record = Transcription(
-                                                    id = transcriptionId,
-                                                    userId = userId,
-                                                    transcription = accumulatedText,
-                                                    speakerLabels = null,
-                                                    audioFilePath = audioUriString,
-                                                    timestamp = recordTimestamp,
-                                                    modelName = "Gemini 2.5 Flash",
-                                                    driveFileId = driveFileId
-                                                )
-                                                repository?.insert(record)
-                                            }
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    // ignore parsing error for partial chunk
-                                }
+
+                val audioInfo = detectAudioInfo(context, audioUriString?.let { Uri.parse(it) }, bytes, originalFileName)
+
+                val accumulatedText = executeRoutedTranscriptionStream(
+                    apiKey = apiKey,
+                    prompt = prompt,
+                    bytes = bytes,
+                    audioInfo = audioInfo,
+                    biometricParts = biometricParts,
+                    onChunkReceived = { currentText ->
+                        _uiState.value = _uiState.value.copy(
+                            lastTranscription = currentText,
+                            progress = 0.8f
+                        )
+                        val currentTime = System.currentTimeMillis()
+                        if (currentTime - lastSaveTime > 2000) {
+                            lastSaveTime = currentTime
+                            val record = Transcription(
+                                id = transcriptionId,
+                                userId = userId,
+                                transcription = currentText,
+                                speakerLabels = null,
+                                audioFilePath = audioUriString,
+                                timestamp = recordTimestamp,
+                                modelName = getActiveModelDisplayName(),
+                                driveFileId = driveFileId
+                            )
+                            viewModelScope.launch {
+                                repository?.insert(record)
                             }
                         }
                     }
-                }
-                
+                )
+
                 val resultText = accumulatedText.ifEmpty { "No transcription found" }
-                
+
                 _uiState.value = _uiState.value.copy(
                     statusMessage = "Generating AI Summary...",
                     progress = 0.9f,
@@ -1602,22 +1808,7 @@ class MainViewModel : ViewModel() {
                     $resultText
                 """.trimIndent()
 
-                val summaryRequest = GenerateContentRequest(
-                    contents = listOf(
-                        Content(parts = listOf(Part(text = summaryPrompt)))
-                    ),
-                    generationConfig = GenerationConfig(
-                        responseMimeType = "application/json"
-                    )
-                )
-
-                val summaryResponse = RetrofitClient.service.generateContent(
-                    model = "gemini-2.5-flash",
-                    apiKey = apiKey,
-                    request = summaryRequest
-                )
-
-                val responseJson = summaryResponse.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                val responseJson = executeRoutedSummary(apiKey, summaryPrompt)
 
                 var parsedTitle: String? = null
                 var parsedSummary: String? = null
@@ -1679,7 +1870,7 @@ class MainViewModel : ViewModel() {
                     audioFilePath = audioUriString,
                     summary = finalSummaryText,
                     timestamp = recordTimestamp,
-                    modelName = "Gemini 2.5 Flash",
+                    modelName = getActiveModelDisplayName(),
                     driveFileId = driveFileId,
                     sessionTitle = parsedTitle,
                     locationName = locationName,
@@ -1901,7 +2092,6 @@ class MainViewModel : ViewModel() {
                         progress = ((index.toFloat() + 0.3f) / totalParts) * 0.85f
                     )
 
-                    val base64Audio = Base64.encodeToString(bytes, Base64.NO_WRAP)
                     val prompt = if (recognizedRosterNames.isNotEmpty()) {
                         """
                         Please transcribe this audio (Part $partNumber of a $totalParts-part recording session titled '$sessionTitle').
@@ -1917,73 +2107,30 @@ class MainViewModel : ViewModel() {
                         "Please transcribe this audio (Part $partNumber of a $totalParts-part recording session titled '$sessionTitle'). Identify the different speakers and include timestamps for when each speaker speaks. Output the result formatted with speaker labels, for example:\n[00:12] Speaker A: Hello\n[00:15] Speaker B: Hi there"
                     }
 
-                    val partContentParts = mutableListOf<Part>()
-                    partContentParts.addAll(biometricParts)
-                    partContentParts.add(Part(text = prompt))
-                    val sanitizedMime = sanitizeMimeTypeForGemini(audioInfo.normalizedMimeForGemini, bytes)
-                    partContentParts.add(
-                        Part(
-                            inlineData = InlineData(
-                                mimeType = sanitizedMime,
-                                data = base64Audio
-                            )
-                        )
-                    )
-
-                    val request = GenerateContentRequest(
-                        contents = listOf(
-                            Content(parts = partContentParts)
-                        )
-                    )
-
-                    val response = RetrofitClient.service.generateContentStream(
-                        model = "gemini-2.5-flash",
+                    val partAccumulatedText = executeRoutedTranscriptionStream(
                         apiKey = apiKey,
-                        request = request
-                    )
-
-                    var partAccumulatedText = ""
-                    val partTranscriptionId = UUID.randomUUID().toString()
-
-                    withContext(Dispatchers.IO) {
-                        response.byteStream().bufferedReader().use { reader ->
-                            var line: String?
-                            while (reader.readLine().also { line = it } != null) {
-                                if (line!!.startsWith("data: ")) {
-                                    try {
-                                        val jsonStr = line!!.substring(6)
-                                        val chunk = JSONObject(jsonStr)
-                                        val candidates = chunk.optJSONArray("candidates")
-                                        if (candidates != null && candidates.length() > 0) {
-                                            val content = candidates.getJSONObject(0).optJSONObject("content")
-                                            val parts = content?.optJSONArray("parts")
-                                            if (parts != null && parts.length() > 0) {
-                                                val textPart = parts.getJSONObject(0).optString("text", "")
-                                                partAccumulatedText += textPart
-                                                _uiState.value = _uiState.value.copy(
-                                                    lastTranscription = partAccumulatedText
-                                                )
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        // Ignore partial chunk parsing errors
-                                    }
-                                }
-                            }
+                        prompt = prompt,
+                        bytes = bytes,
+                        audioInfo = audioInfo,
+                        biometricParts = biometricParts,
+                        onChunkReceived = { currentText ->
+                            _uiState.value = _uiState.value.copy(
+                                lastTranscription = currentText
+                            )
                         }
-                    }
+                    )
 
                     val finalPartText = partAccumulatedText.ifEmpty { "No speech detected in Part $partNumber." }
 
                     val partRecord = Transcription(
-                        id = partTranscriptionId,
+                        id = UUID.randomUUID().toString(),
                         userId = userId,
                         transcription = finalPartText,
                         speakerLabels = null,
                         audioFilePath = localUriString,
                         timestamp = customTimestamp,
                         summary = null,
-                        modelName = "Gemini 2.5 Flash",
+                        modelName = getActiveModelDisplayName(),
                         sessionId = sessionId,
                         partIndex = index,
                         totalParts = totalParts,
@@ -2033,19 +2180,7 @@ class MainViewModel : ViewModel() {
                     $combinedTranscripts
                 """.trimIndent()
 
-                val summaryRequest = GenerateContentRequest(
-                    contents = listOf(
-                        Content(parts = listOf(Part(text = masterSummaryPrompt)))
-                    )
-                )
-
-                val summaryResponse = RetrofitClient.service.generateContent(
-                    model = "gemini-2.5-flash",
-                    apiKey = apiKey,
-                    request = summaryRequest
-                )
-
-                val masterSummaryResult = summaryResponse.candidates?.firstOrNull()?.content?.parts?.firstOrNull()?.text
+                val masterSummaryResult = executeRoutedSummary(apiKey, masterSummaryPrompt)
                     ?: "Sequential session completed with $totalParts parts."
 
                 // Update each part with the master summary so every view gets the consolidated takeaways
@@ -2108,7 +2243,7 @@ class MainViewModel : ViewModel() {
                             )
                         )
                         val response = RetrofitClient.service.generateContent(
-                            model = "gemini-2.5-pro",
+                            model = AiConstants.GEMINI_DEFAULT_MODEL,
                             apiKey = apiKey,
                             request = request
                         )
@@ -2116,7 +2251,7 @@ class MainViewModel : ViewModel() {
                     }
                     AiProvider.OPENROUTER -> {
                         val request = com.example.api.OpenAiChatRequest(
-                            model = "anthropic/claude-3-opus-20240229",
+                            model = AiConstants.OPENROUTER_DEFAULT_MODEL,
                             messages = listOf(
                                 com.example.api.OpenAiMessage(role = "user", content = question)
                             )
@@ -2131,7 +2266,7 @@ class MainViewModel : ViewModel() {
                     }
                     AiProvider.GROQ -> {
                         val request = com.example.api.OpenAiChatRequest(
-                            model = "llama3-70b-8192",
+                            model = AiConstants.GROQ_TEXT_MODEL,
                             messages = listOf(
                                 com.example.api.OpenAiMessage(role = "user", content = question)
                             )
@@ -2151,7 +2286,8 @@ class MainViewModel : ViewModel() {
                     lastAnswer = resultText
                 )
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = e.message)
+                val errorMsg = extractErrorMessage(e)
+                _uiState.value = _uiState.value.copy(isLoading = false, statusMessage = null, progress = null, error = errorMsg)
             }
         }
     }
@@ -2226,7 +2362,7 @@ class MainViewModel : ViewModel() {
             speakerLabels = null,
             audioFilePath = audioUriString,
             summary = summary,
-            modelName = "Gemini 2.5 Flash"
+            modelName = getActiveModelDisplayName()
         )
         
         viewModelScope.launch {

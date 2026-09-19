@@ -247,9 +247,9 @@ fun SettingsScreen(
 
                         // 3. AI Provider & Key Status
                         val aiModelLabel = when (uiState.aiProvider) {
-                            AiProvider.GEMINI -> if (uiState.customApiKey.isNotBlank()) "Gemini 3.5 (Custom Key)" else "Gemini 3.5 (Default Key)"
+                            AiProvider.GEMINI -> if (uiState.customApiKey.isNotBlank()) "Gemini 3.6 Flash (Custom Key)" else "Gemini 3.6 Flash (Default Key)"
                             AiProvider.OPENROUTER -> if (uiState.openRouterApiKey.isNotBlank()) "OpenRouter (Configured)" else "OpenRouter (No Key)"
-                            AiProvider.GROQ -> if (uiState.groqApiKey.isNotBlank()) "Groq Llama 3 (Configured)" else "Groq (No Key)"
+                            AiProvider.GROQ -> if (uiState.groqApiKey.isNotBlank()) "Groq Whisper & Llama 3.3 (Configured)" else "Groq (No Key)"
                         }
                         AssistChip(
                             onClick = { },
