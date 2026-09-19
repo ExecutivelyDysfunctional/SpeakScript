@@ -22,9 +22,10 @@ import retrofit2.http.Path
 object AiConstants {
     const val GEMINI_DEFAULT_MODEL = "gemini-3.6-flash"
     const val GEMINI_PRO_MODEL = "gemini-3.6-flash"
-    const val OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash"
+    const val OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash:free"
     const val GROQ_AUDIO_MODEL = "whisper-large-v3"
     const val GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
+    const val GROQ_TRANSCRIPTION_PROMPT_MAX_LENGTH = 896
 }
 
 @JsonClass(generateAdapter = true)

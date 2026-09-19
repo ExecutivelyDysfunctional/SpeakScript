@@ -127,11 +127,13 @@ fun SettingsScreen(
                         android.widget.Toast.makeText(context, "Signed in successfully as $email", android.widget.Toast.LENGTH_SHORT).show()
                     }
                     .addOnFailureListener { e ->
-                        android.widget.Toast.makeText(context, "Sign in failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(context, "Sign in failed: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
                     }
             } catch (e: Exception) {
-                android.widget.Toast.makeText(context, "Failed to parse Google credentials: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(context, "Failed to parse Google credentials: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
             }
+        } else {
+            android.widget.Toast.makeText(context, "Unsupported credential type: ${credential.type}", android.widget.Toast.LENGTH_LONG).show()
         }
     }
 
@@ -421,7 +423,7 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
-                        text = "Enter your OpenRouter API key to access free models like google/gemini-2.0-flash-lite:free or deepseek/deepseek-chat:free.",
+                        text = "Enter your OpenRouter API key to access free models like google/gemini-2.5-flash:free or deepseek/deepseek-chat:free.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -674,6 +676,7 @@ fun SettingsScreen(
                                     if (initialEx is GetCredentialCancellationException || 
                                         initialEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
                                         (initialEx.message?.contains("cancel", ignoreCase = true) == true)) {
+                                        android.widget.Toast.makeText(context, "Google Sign-In canceled by user", android.widget.Toast.LENGTH_SHORT).show()
                                         return@launch
                                     }
 
@@ -695,6 +698,7 @@ fun SettingsScreen(
                                         if (fallbackEx is GetCredentialCancellationException || 
                                             fallbackEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
                                             (fallbackEx.message?.contains("cancel", ignoreCase = true) == true)) {
+                                            android.widget.Toast.makeText(context, "Google Sign-In canceled by user", android.widget.Toast.LENGTH_SHORT).show()
                                             return@launch
                                         }
                                         fallbackEx.printStackTrace()
@@ -740,21 +744,39 @@ fun SettingsScreen(
                 val driveSignInLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
                     contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
                 ) { result ->
-                    val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(result.data)
+                    if (result.resultCode == android.app.Activity.RESULT_CANCELED) {
+                        onDriveConnected(null)
+                        android.widget.Toast.makeText(context, "Google Drive connection canceled", android.widget.Toast.LENGTH_SHORT).show()
+                        return@rememberLauncherForActivityResult
+                    }
+                    val intentData = result.data
+                    if (intentData == null) {
+                        onDriveConnected(null)
+                        android.widget.Toast.makeText(context, "Google Drive connection failed: No response data received", android.widget.Toast.LENGTH_SHORT).show()
+                        return@rememberLauncherForActivityResult
+                    }
+                    val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(intentData)
                     try {
                         val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
-                        onDriveConnected(account?.email)
-                        android.widget.Toast.makeText(context, "Drive connected: ${account?.email}", android.widget.Toast.LENGTH_SHORT).show()
+                        if (account != null) {
+                            onDriveConnected(account.email)
+                            android.widget.Toast.makeText(context, "Drive connected: ${account.email}", android.widget.Toast.LENGTH_SHORT).show()
+                        } else {
+                            onDriveConnected(null)
+                            android.widget.Toast.makeText(context, "Google Drive connection failed: Unable to retrieve account details", android.widget.Toast.LENGTH_SHORT).show()
+                        }
                     } catch (e: com.google.android.gms.common.api.ApiException) {
                         onDriveConnected(null)
                         if (e.statusCode == 10) {
                             showDriveError10Dialog = true
+                        } else if (e.statusCode == 12501 || e.statusCode == 12500) {
+                            android.widget.Toast.makeText(context, "Google Drive connection canceled by user (Code ${e.statusCode})", android.widget.Toast.LENGTH_SHORT).show()
                         } else {
-                            android.widget.Toast.makeText(context, "Drive connection failed (Code ${e.statusCode}): ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                            android.widget.Toast.makeText(context, "Drive connection failed (Code ${e.statusCode}): ${e.message ?: "API Error"}", android.widget.Toast.LENGTH_LONG).show()
                         }
                     } catch (e: Exception) {
                         onDriveConnected(null)
-                        android.widget.Toast.makeText(context, "Drive connection failed: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+                        android.widget.Toast.makeText(context, "Drive connection failed: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }
 

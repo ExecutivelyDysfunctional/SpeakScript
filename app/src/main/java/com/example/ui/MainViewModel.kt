@@ -68,6 +68,21 @@ class MainViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    companion object {
+        private const val GROQ_TRANSCRIPTION_PROMPT_MAX_LENGTH = 896
+
+        fun truncatePromptForGroq(prompt: String, maxLength: Int = GROQ_TRANSCRIPTION_PROMPT_MAX_LENGTH): String {
+            if (prompt.length <= maxLength) return prompt
+            val substring = prompt.take(maxLength)
+            val lastSpace = substring.lastIndexOf(' ')
+            return if (lastSpace > 0) {
+                substring.substring(0, lastSpace).trimEnd()
+            } else {
+                substring
+            }
+        }
+    }
+
     private fun extractErrorMessage(
         e: Throwable,
         providerName: String? = null,
@@ -96,6 +111,9 @@ class MainViewModel : ViewModel() {
             if (groqApiKey.length > 5) {
                 result = result.replace(groqApiKey, "***MASKED_KEY***")
             }
+            result = result.replace(Regex("sk-or-v1-[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
+            result = result.replace(Regex("gsk_[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
+            result = result.replace(Regex("AIzaSy[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
             return result
         }
 
@@ -108,21 +126,28 @@ class MainViewModel : ViewModel() {
             }
             val errorBody = rawErrorBody?.let { maskKey(it) } ?: ""
 
-            if (!errorBody.isNullOrBlank()) {
+            if (errorBody.isNotBlank()) {
                 try {
                     val json = JSONObject(errorBody)
                     val errorObj = json.optJSONObject("error")
                     val msg = errorObj?.optString("message") ?: json.optString("message").takeIf { it.isNotBlank() }
                     val status = errorObj?.optString("status") ?: json.optString("code").takeIf { it.isNotBlank() }
                     if (!msg.isNullOrBlank()) {
-                        return "$provider Error ($category HTTP $code ${status ?: ""}): $msg".trim()
+                        val cleanMsg = maskKey(msg)
+                        val statusPart = if (!status.isNullOrBlank() && status != code.toString()) " $status" else ""
+                        return "$provider Error ($category HTTP $code$statusPart): $cleanMsg".trim()
                     }
                 } catch (ex: Exception) {
-                    return "$provider Error ($category HTTP $code): $errorBody"
+                    // Ignore JSON parse failure
                 }
-                return "$provider Error ($category HTTP $code): $errorBody"
             }
-            return "$provider Error ($category HTTP $code): ${e.message()}"
+
+            if (code == 403) {
+                return "$provider Error ($category HTTP 403): Key limit exceeded or request forbidden. Please check your API key and account usage quota."
+            }
+
+            val sanitizedMsg = maskKey(e.message())
+            return "$provider Error ($category HTTP $code): $sanitizedMsg"
         }
         val rawMsg = e.localizedMessage ?: e.message ?: "Unknown error"
         return "$provider Error ($category): ${maskKey(rawMsg)}"
@@ -266,7 +291,7 @@ class MainViewModel : ViewModel() {
                 val filePart = MultipartBody.Part.createFormData("file", "audio.${audioInfo.extension}", bytes.toRequestBody(mediaType))
                 val modelPart = AiConstants.GROQ_AUDIO_MODEL.toRequestBody("text/plain".toMediaType())
                 val responseFormatPart = "json".toRequestBody("text/plain".toMediaType())
-                val promptPart = if (prompt.isNotBlank()) prompt.take(1000).toRequestBody("text/plain".toMediaType()) else null
+                val promptPart = if (prompt.isNotBlank()) truncatePromptForGroq(prompt).toRequestBody("text/plain".toMediaType()) else null
 
                 val response = withContext(Dispatchers.IO) {
                     GroqAudioClient.service.transcribeAudio(
@@ -493,11 +518,12 @@ class MainViewModel : ViewModel() {
         )
     }
 
-    fun setDriveConnected(email: String?) {
+    fun setDriveConnected(email: String?, errorMessage: String? = null) {
         _uiState.value = _uiState.value.copy(
             isDriveConnected = email != null,
             driveEmail = email,
-            infoMessage = if (email != null) "Google Drive cloud sync connected ($email)" else "Google Drive disconnected"
+            infoMessage = if (email != null) "Google Drive cloud sync connected ($email)" else if (errorMessage == null) "Google Drive disconnected" else null,
+            error = errorMessage
         )
     }
 
