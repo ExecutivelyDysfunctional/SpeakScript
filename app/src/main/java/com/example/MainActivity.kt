@@ -22,11 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.MainViewModel
 import com.example.ui.theme.MyApplicationTheme
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.CustomCredential
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
@@ -121,21 +116,22 @@ fun SystemStatusHeaderBar(
                 )
             }
 
-            // 2. Drive Cloud Sync Pill
+            // 2. Cloud Sync Pill
             item {
+                val isCloudSynced = uiState.isAuthenticated && !uiState.isAnonymous
                 AssistChip(
                     onClick = onOpenSettings,
                     label = {
                         Text(
-                            text = if (uiState.isDriveConnected) "Drive Sync ON" else "Drive Offline",
+                            text = if (isCloudSynced) "Cloud Sync Active" else "Offline Storage",
                             style = MaterialTheme.typography.labelSmall
                         )
                     },
                     leadingIcon = {
                         Icon(
-                            imageVector = if (uiState.isDriveConnected) Icons.Default.CloudDone else Icons.Default.CloudOff,
+                            imageVector = if (isCloudSynced) Icons.Default.CloudDone else Icons.Default.CloudOff,
                             contentDescription = null,
-                            tint = if (uiState.isDriveConnected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            tint = if (isCloudSynced) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
                             modifier = Modifier.size(16.dp)
                         )
                     },
@@ -607,15 +603,13 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             onSaveOpenRouterApiKey = { viewModel.saveOpenRouterApiKey(context, it) },
             onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
             onAiProviderChange = { viewModel.setAiProvider(context, it) },
-            onSaveWebClientId = { viewModel.saveWebClientId(context, it) },
+            onSyncCloud = { viewModel.syncTranscriptionsWithCloud() },
             onExportAllJson = {
                 exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
             },
             onImportJson = {
                 importLauncher.launch(arrayOf("application/json", "text/*", "*/*"))
             },
-            onDriveConnected = { viewModel.setDriveConnected(it) },
-            onSignInSuccess = { viewModel.onGoogleSignInSuccess(it) },
             onOpenSpeakers = {
                 showSettings = false
                 currentTab = 2
@@ -652,7 +646,6 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             onSaveNewSpeaker = { newProfile ->
                 viewModel.saveSpeaker(newProfile)
             },
-            onGetDriveStreamInfo = { driveId -> viewModel.getDriveStreamInfo(context, driveId) },
             onUpdateConfidenceAndSpeakers = { id, labels, conf ->
                 viewModel.updateTranscriptionConfidenceAndSpeaker(id, labels, conf)
             },

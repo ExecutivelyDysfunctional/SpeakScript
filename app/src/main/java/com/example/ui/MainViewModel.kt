@@ -44,15 +44,10 @@ import org.json.JSONObject
 import com.example.db.Transcription
 import com.example.db.SpeakerProfile
 import com.example.db.SpeakerRepository
-import com.example.api.DriveCreateFolderRequest
-import com.example.api.DriveFileMetadata
-import com.example.api.GoogleDriveClient
+import com.example.util.AudioSliceExtractor
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.toRequestBody
-import com.google.android.gms.auth.GoogleAuthUtil
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.example.util.AudioSliceExtractor
 import retrofit2.HttpException
 
 
@@ -370,7 +365,6 @@ class MainViewModel : ViewModel() {
     private var customApiKey: String = ""
     private var openRouterApiKey: String = ""
     private var groqApiKey: String = ""
-    private var webClientId: String = ""
     private var aiProvider: AiProvider = AiProvider.GEMINI
 
     private val firestore by lazy { FirebaseFirestore.getInstance() }
@@ -383,7 +377,6 @@ class MainViewModel : ViewModel() {
         customApiKey = prefs.getString("custom_api_key", "") ?: ""
         openRouterApiKey = prefs.getString("openrouter_api_key", "") ?: ""
         groqApiKey = prefs.getString("groq_api_key", "") ?: ""
-        webClientId = prefs.getString("custom_web_client_id", "") ?: ""
         val providerName = prefs.getString("ai_provider", AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
         aiProvider = try { AiProvider.valueOf(providerName) } catch (e: Exception) { AiProvider.GEMINI }
 
@@ -396,14 +389,12 @@ class MainViewModel : ViewModel() {
             customApiKey = customApiKey,
             openRouterApiKey = openRouterApiKey,
             groqApiKey = groqApiKey,
-            webClientId = webClientId,
             aiProvider = aiProvider,
             biometricSensitivity = bioSensitivity,
             biometricSliceDurationSec = bioSliceSec,
             biometricMaxSpeakers = bioMaxSpeakers,
             biometricAcousticMode = bioAcousticMode
         )
-        checkDriveConnection(context)
     }
 
     fun updateBiometricCalibration(
@@ -506,363 +497,230 @@ class MainViewModel : ViewModel() {
         _uiState.value = _uiState.value.copy(biometricCalibrationReport = null)
     }
 
-    fun checkDriveConnection(context: Context) {
-        val account = GoogleSignIn.getLastSignedInAccount(context)
-        val hasScope = account != null && GoogleSignIn.hasPermissions(
-            account,
-            com.google.android.gms.common.api.Scope("https://www.googleapis.com/auth/drive.file")
-        )
-        _uiState.value = _uiState.value.copy(
-            isDriveConnected = hasScope,
-            driveEmail = if (hasScope) account?.email else null
-        )
-    }
-
-    fun setDriveConnected(email: String?, errorMessage: String? = null) {
-        _uiState.value = _uiState.value.copy(
-            isDriveConnected = email != null,
-            driveEmail = email,
-            infoMessage = if (email != null) "Google Drive cloud sync connected ($email)" else if (errorMessage == null) "Google Drive disconnected" else null,
-            error = errorMessage
-        )
-    }
-
-    suspend fun getGoogleDriveAccessToken(context: Context): String? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val account = GoogleSignIn.getLastSignedInAccount(context) ?: return@withContext null
-                val scopeStr = "oauth2:https://www.googleapis.com/auth/drive.file"
-                GoogleAuthUtil.getToken(context, account.account!!, scopeStr)
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
+    fun signInWithEmail(email: String, password: String, onResult: (Boolean, String?) -> Unit) {
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isEmpty() || !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+            onResult(false, "Please enter a valid email address.")
+            return
         }
-    }
-
-    suspend fun uploadAudioToDrive(context: Context, bytes: ByteArray, fileName: String, mimeType: String): String? {
-        val token = getGoogleDriveAccessToken(context) ?: return null
-        return withContext(Dispatchers.IO) {
-            try {
-                val metadataJson = """{"name": "$fileName"}"""
-                val metadataPart = MultipartBody.Part.createFormData(
-                    "metadata",
-                    null,
-                    metadataJson.toRequestBody("application/json; charset=UTF-8".toMediaType())
-                )
-
-                val filePart = MultipartBody.Part.createFormData(
-                    "file",
-                    fileName,
-                    bytes.toRequestBody(mimeType.toMediaType())
-                )
-
-                val authHeader = "Bearer $token"
-                val response = com.example.api.GoogleDriveClient.service.uploadFile(
-                    authHeader = authHeader,
-                    metadata = metadataPart,
-                    file = filePart
-                )
-                response.id
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
+        if (password.length < 6) {
+            onResult(false, "Password must be at least 6 characters.")
+            return
         }
+        val auth = getAuthSafe()
+        if (auth == null) {
+            onResult(false, "Firebase Auth service is unavailable.")
+            return
+        }
+
+        auth.signInWithEmailAndPassword(trimmedEmail, password)
+            .addOnSuccessListener { result ->
+                val user = result.user
+                val uid = user?.uid ?: ""
+                viewModelScope.launch {
+                    try {
+                        repository?.updateUserIdForLocalRecords("local_user", uid)
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                    syncTranscriptionsWithCloud()
+                }
+                _uiState.value = _uiState.value.copy(
+                    isAuthenticated = true,
+                    isAnonymous = false,
+                    userEmail = user?.email ?: trimmedEmail,
+                    infoMessage = "Signed in successfully as ${user?.email ?: trimmedEmail}!"
+                )
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                val msg = when {
+                    e.message?.contains("password", ignoreCase = true) == true -> "Incorrect password. Please try again or reset your password."
+                    e.message?.contains("no user", ignoreCase = true) == true || e.message?.contains("user-not-found", ignoreCase = true) == true -> "No account found with this email. Please check the email or create an account."
+                    e.message?.contains("network", ignoreCase = true) == true -> "Network error. Please check your internet connection."
+                    else -> e.localizedMessage ?: "Sign-in failed."
+                }
+                onResult(false, msg)
+            }
     }
 
-    suspend fun getDriveStreamInfo(context: Context, driveFileId: String): Pair<String, Map<String, String>>? {
-        val token = getGoogleDriveAccessToken(context) ?: return null
-        val url = "https://www.googleapis.com/drive/v3/files/$driveFileId?alt=media"
-        val headers = mapOf("Authorization" to "Bearer $token")
-        return Pair(url, headers)
-    }
+    fun registerWithEmail(email: String, password: String, onResult: (Boolean, String?) -> Unit) {
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isEmpty() || !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+            onResult(false, "Please enter a valid email address.")
+            return
+        }
+        if (password.length < 6) {
+            onResult(false, "Password must be at least 6 characters.")
+            return
+        }
+        val auth = getAuthSafe()
+        if (auth == null) {
+            onResult(false, "Firebase Auth service is unavailable.")
+            return
+        }
 
-    private fun escapeDriveQuery(value: String): String {
-        return value.replace("\\", "\\\\").replace("'", "\\'")
-    }
-
-    suspend fun getOrCreateFolderHierarchy(token: String, locationName: String?, timestamp: Long): String? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val authHeader = "Bearer $token"
-                // 1. Root folder: "Transcribe AI"
-                val rootQuery = "mimeType = 'application/vnd.google-apps.folder' and name = '${escapeDriveQuery("Transcribe AI")}' and trashed = false"
-                val rootList = GoogleDriveClient.service.listFiles(authHeader = authHeader, query = rootQuery)
-                val rootFolderId = rootList.files.firstOrNull()?.id ?: run {
-                    val created = GoogleDriveClient.service.createFolder(
-                        authHeader = authHeader,
-                        folder = DriveCreateFolderRequest(name = "Transcribe AI")
+        val currentUser = auth.currentUser
+        if (currentUser != null && currentUser.isAnonymous) {
+            // Preserve local data by converting/linking the anonymous account with email & password
+            val credential = com.google.firebase.auth.EmailAuthProvider.getCredential(trimmedEmail, password)
+            currentUser.linkWithCredential(credential)
+                .addOnSuccessListener { result ->
+                    val user = result.user
+                    val uid = user?.uid ?: ""
+                    viewModelScope.launch {
+                        try {
+                            repository?.updateUserIdForLocalRecords("local_user", uid)
+                        } catch (e: Exception) {}
+                        syncTranscriptionsWithCloud()
+                    }
+                    _uiState.value = _uiState.value.copy(
+                        isAuthenticated = true,
+                        isAnonymous = false,
+                        userEmail = user?.email ?: trimmedEmail,
+                        infoMessage = "Account created and local data linked successfully!"
                     )
-                    created.id
+                    onResult(true, null)
                 }
-
-                // 2. Subfolder: "<Location>" if available, or "YYYY-MM"
-                val cleanLoc = locationName?.trim()?.replace(Regex("[/\\\\?%*:|\"<>]"), " ")?.takeIf { it.isNotBlank() }
-                val subfolderName = cleanLoc ?: SimpleDateFormat("yyyy-MM", Locale.US).format(Date(timestamp))
-
-                val subQuery = "mimeType = 'application/vnd.google-apps.folder' and name = '${escapeDriveQuery(subfolderName)}' and '$rootFolderId' in parents and trashed = false"
-                val subList = GoogleDriveClient.service.listFiles(authHeader = authHeader, query = subQuery)
-                val targetFolderId = subList.files.firstOrNull()?.id ?: run {
-                    val created = GoogleDriveClient.service.createFolder(
-                        authHeader = authHeader,
-                        folder = DriveCreateFolderRequest(
-                            name = subfolderName,
-                            parents = listOf(rootFolderId)
-                        )
-                    )
-                    created.id
+                .addOnFailureListener { e ->
+                    if (e.message?.contains("already in use", ignoreCase = true) == true) {
+                        onResult(false, "An account with this email already exists. Please sign in instead.")
+                    } else {
+                        // Fallback to direct account creation
+                        createUserDirectly(auth, trimmedEmail, password, onResult)
+                    }
                 }
-                targetFolderId
-            } catch (e: Exception) {
-                e.printStackTrace()
-                null
-            }
+        } else {
+            createUserDirectly(auth, trimmedEmail, password, onResult)
         }
     }
 
-    suspend fun renameAndMoveDriveFile(
-        token: String,
-        driveFileId: String,
-        newFileName: String,
-        targetFolderId: String
-    ): Boolean {
-        return withContext(Dispatchers.IO) {
+    private fun createUserDirectly(auth: FirebaseAuth, email: String, password: String, onResult: (Boolean, String?) -> Unit) {
+        auth.createUserWithEmailAndPassword(email, password)
+            .addOnSuccessListener { result ->
+                val user = result.user
+                val uid = user?.uid ?: ""
+                viewModelScope.launch {
+                    try {
+                        repository?.updateUserIdForLocalRecords("local_user", uid)
+                    } catch (e: Exception) {}
+                    syncTranscriptionsWithCloud()
+                }
+                _uiState.value = _uiState.value.copy(
+                    isAuthenticated = true,
+                    isAnonymous = false,
+                    userEmail = user?.email ?: email,
+                    infoMessage = "Account created successfully as $email!"
+                )
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                val msg = when {
+                    e.message?.contains("already in use", ignoreCase = true) == true -> "An account with this email already exists. Please sign in."
+                    e.message?.contains("weak-password", ignoreCase = true) == true -> "Password is too weak. Please use at least 6 characters."
+                    e.message?.contains("badly formatted", ignoreCase = true) == true || e.message?.contains("invalid-email", ignoreCase = true) == true -> "Please enter a valid email address."
+                    else -> e.localizedMessage ?: "Account creation failed."
+                }
+                onResult(false, msg)
+            }
+    }
+
+    fun sendPasswordResetEmail(email: String, onResult: (Boolean, String?) -> Unit) {
+        val trimmedEmail = email.trim()
+        if (trimmedEmail.isEmpty() || !android.util.Patterns.EMAIL_ADDRESS.matcher(trimmedEmail).matches()) {
+            onResult(false, "Please enter a valid email address.")
+            return
+        }
+        val auth = getAuthSafe()
+        if (auth == null) {
+            onResult(false, "Firebase Auth service is unavailable.")
+            return
+        }
+
+        auth.sendPasswordResetEmail(trimmedEmail)
+            .addOnSuccessListener {
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                onResult(false, e.localizedMessage ?: "Failed to send password reset email.")
+            }
+    }
+
+    fun signOut() {
+        try {
+            getAuthSafe()?.signOut()
+            _uiState.value = _uiState.value.copy(
+                isAuthenticated = false,
+                isAnonymous = true,
+                userEmail = null,
+                infoMessage = "Signed out. Working in Guest Mode (Offline)."
+            )
+        } catch (e: Exception) {
+            _uiState.value = _uiState.value.copy(error = "Sign out error: ${e.localizedMessage ?: e.message}")
+        }
+    }
+
+    fun syncTranscriptionsWithCloud() {
+        val user = getAuthSafe()?.currentUser
+        if (user == null || user.isAnonymous) {
+            _uiState.value = _uiState.value.copy(
+                infoMessage = "Guest Mode active: Transcriptions are safely preserved in local Room storage."
+            )
+            return
+        }
+        val uid = user.uid
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Syncing with cloud vault...")
             try {
-                val authHeader = "Bearer $token"
-                var removeParentsStr: String? = null
-                try {
-                    val fileMeta = GoogleDriveClient.service.getFileMetadata(authHeader = authHeader, fileId = driveFileId)
-                    val oldParents = fileMeta.parents?.filter { it.isNotBlank() } ?: emptyList()
-                    if (oldParents.isNotEmpty()) {
-                        removeParentsStr = oldParents.joinToString(",")
-                    }
-                } catch (e: Exception) {
-                    // Ignore metadata lookup failure and attempt addParents directly
+                val userTranscriptionsRef = firestore.collection("users").document(uid).collection("transcriptions")
+                val snapshot = withContext(Dispatchers.IO) {
+                    com.google.android.gms.tasks.Tasks.await(userTranscriptionsRef.get())
+                }
+                val cloudRecords = snapshot.documents.mapNotNull { it.toObject(Transcription::class.java) }
+                val cloudMap = cloudRecords.associateBy { it.id }
+
+                // Insert/merge cloud records into local Room
+                cloudRecords.forEach { record ->
+                    repository?.insert(record.copy(userId = uid))
                 }
 
-                GoogleDriveClient.service.updateFileMetadata(
-                    authHeader = authHeader,
-                    fileId = driveFileId,
-                    addParents = targetFolderId,
-                    removeParents = removeParentsStr,
-                    metadata = DriveFileMetadata(name = newFileName)
+                // Upload local records that are not in cloud or newer
+                val localList = repository?.getAllTranscriptionsSync() ?: emptyList()
+                localList.forEach { localRec ->
+                    val cloudRec = cloudMap[localRec.id]
+                    if (cloudRec == null || localRec.timestamp > cloudRec.timestamp) {
+                        userTranscriptionsRef.document(localRec.id).set(localRec.copy(userId = uid))
+                    }
+                }
+
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    statusMessage = null,
+                    infoMessage = "Cloud sync complete (${cloudRecords.size} cloud records synced with local vault).",
+                    error = null
                 )
-                true
             } catch (e: Exception) {
-                e.printStackTrace()
-                false
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    statusMessage = null,
+                    infoMessage = "Offline fallback active: Local transcriptions are safely stored on device.",
+                    error = null
+                )
             }
         }
     }
 
-    suspend fun uploadCompanionDocument(
-        token: String,
-        targetFolderId: String,
-        companionFileName: String,
-        contentJsonString: String
-    ): String? {
-        return withContext(Dispatchers.IO) {
+    fun syncRecordToFirestore(record: Transcription) {
+        val user = getAuthSafe()?.currentUser
+        if (user != null && !user.isAnonymous) {
             try {
-                val authHeader = "Bearer $token"
-                val metadataJson = JSONObject().apply {
-                    put("name", companionFileName)
-                    put("parents", JSONArray().put(targetFolderId))
-                    put("mimeType", "application/json")
-                }.toString()
-
-                val metadataPart = MultipartBody.Part.createFormData(
-                    "metadata",
-                    null,
-                    metadataJson.toRequestBody("application/json; charset=UTF-8".toMediaType())
-                )
-
-                val companionBytes = contentJsonString.toByteArray(Charsets.UTF_8)
-                val filePart = MultipartBody.Part.createFormData(
-                    "file",
-                    companionFileName,
-                    companionBytes.toRequestBody("application/json; charset=UTF-8".toMediaType())
-                )
-
-                val response = GoogleDriveClient.service.uploadFile(
-                    authHeader = authHeader,
-                    metadata = metadataPart,
-                    file = filePart
-                )
-                response.id
+                firestore.collection("users").document(user.uid)
+                    .collection("transcriptions").document(record.id)
+                    .set(record.copy(userId = user.uid))
             } catch (e: Exception) {
-                e.printStackTrace()
-                null
+                // Ignore gracefully as it is safely stored in local Room DB
             }
         }
-    }
-
-    suspend fun organizeDriveArtifacts(
-        context: Context,
-        driveFileId: String?,
-        sessionTitle: String?,
-        locationName: String?,
-        activeSpeakersCsv: String?,
-        mentionedPeopleCsv: String?,
-        summary: String?,
-        transcription: String,
-        timestamp: Long,
-        originalFileName: String?
-    ) {
-        val token = getGoogleDriveAccessToken(context) ?: return
-        withContext(Dispatchers.IO) {
-            try {
-                // 1. Resolve folder hierarchy: "Transcribe AI / <Location or YYYY-MM>"
-                val targetFolderId = getOrCreateFolderHierarchy(token, locationName, timestamp) ?: return@withContext
-
-                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(timestamp))
-                val extension = when {
-                    originalFileName?.endsWith(".m4a", ignoreCase = true) == true -> ".m4a"
-                    originalFileName?.endsWith(".aac", ignoreCase = true) == true -> ".aac"
-                    originalFileName?.endsWith(".mp3", ignoreCase = true) == true -> ".mp3"
-                    originalFileName?.endsWith(".wav", ignoreCase = true) == true -> ".wav"
-                    else -> ".m4a"
-                }
-
-                val loc = locationName?.trim()?.takeIf { it.isNotBlank() }
-                val title = sessionTitle?.trim()?.takeIf { it.isNotBlank() }
-
-                val titlePart = when {
-                    loc != null && title != null -> {
-                        if (loc.equals(title, ignoreCase = true)) title else "$loc - $title"
-                    }
-                    loc != null -> "$loc - Voice Journal"
-                    title != null -> title
-                    else -> "Voice Journal Recording"
-                }
-
-                val cleanBaseName = "[$dateStr] $titlePart".replace(Regex("[/\\\\?%*:|\"<>]"), "_").trim()
-                val standardizedAudioName = "$cleanBaseName$extension"
-
-                // 2. Context-Aware File Renaming & Relocation
-                if (driveFileId != null) {
-                    renameAndMoveDriveFile(
-                        token = token,
-                        driveFileId = driveFileId,
-                        newFileName = standardizedAudioName,
-                        targetFolderId = targetFolderId
-                    )
-                }
-
-                // 3. Companion Document Upload
-                val companionFileName = "$cleanBaseName - Transcript & Summary.json"
-                val companionJson = JSONObject().apply {
-                    put("sessionTitle", sessionTitle ?: cleanBaseName)
-                    put("date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(timestamp)))
-                    put("timestamp", timestamp)
-                    put("location", locationName ?: "Not specified")
-                    put("activeSpeakers", JSONArray(activeSpeakersCsv?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList<String>()))
-                    put("mentionedPeople", JSONArray(mentionedPeopleCsv?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList<String>()))
-                    put("summary", summary ?: "")
-                    put("transcript", transcription)
-                    put("audioFileName", standardizedAudioName)
-                    if (driveFileId != null) {
-                        put("googleDriveAudioFileId", driveFileId)
-                    }
-                }
-
-                uploadCompanionDocument(
-                    token = token,
-                    targetFolderId = targetFolderId,
-                    companionFileName = companionFileName,
-                    contentJsonString = companionJson.toString(2)
-                )
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-    suspend fun organizeDriveSequentialSessionArtifacts(
-        context: Context,
-        partResults: List<Transcription>,
-        files: List<SequentialAudioFile>,
-        sessionTitle: String,
-        masterSummary: String,
-        combinedTranscripts: String,
-        timestamp: Long
-    ) {
-        val token = getGoogleDriveAccessToken(context) ?: return
-        withContext(Dispatchers.IO) {
-            try {
-                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(timestamp))
-                val targetFolderId = getOrCreateFolderHierarchy(token, null, timestamp) ?: return@withContext
-                val cleanSessionTitle = sessionTitle.trim().replace(Regex("[/\\\\?%*:|\"<>]"), "_")
-
-                // 1. Rename and move each part audio file in Drive
-                for (idx in partResults.indices) {
-                    val part = partResults[idx]
-                    val partDriveId = part.driveFileId ?: continue
-                    val partNum = idx + 1
-                    val fileInfo = files.getOrNull(idx)
-                    val ext = when {
-                        fileInfo?.displayName?.endsWith(".m4a", ignoreCase = true) == true -> ".m4a"
-                        fileInfo?.displayName?.endsWith(".aac", ignoreCase = true) == true -> ".aac"
-                        fileInfo?.displayName?.endsWith(".mp3", ignoreCase = true) == true -> ".mp3"
-                        fileInfo?.displayName?.endsWith(".wav", ignoreCase = true) == true -> ".wav"
-                        else -> ".m4a"
-                    }
-                    val partFileName = "[$dateStr] $cleanSessionTitle - Part $partNum of ${partResults.size}$ext"
-                    renameAndMoveDriveFile(
-                        token = token,
-                        driveFileId = partDriveId,
-                        newFileName = partFileName,
-                        targetFolderId = targetFolderId
-                    )
-                }
-
-                // 2. Upload Master Companion Document
-                val companionFileName = "[$dateStr] $cleanSessionTitle - Session Transcript & Master Summary.json"
-                val companionJson = JSONObject().apply {
-                    put("sessionTitle", sessionTitle)
-                    put("date", SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(timestamp)))
-                    put("timestamp", timestamp)
-                    put("totalParts", partResults.size)
-                    put("masterSummary", masterSummary)
-                    put("combinedTranscripts", combinedTranscripts)
-
-                    val partsArray = JSONArray()
-                    for (idx in partResults.indices) {
-                        val part = partResults[idx]
-                        val fileInfo = files.getOrNull(idx)
-                        val partObj = JSONObject().apply {
-                            put("partNumber", idx + 1)
-                            put("displayName", fileInfo?.displayName ?: "Part ${idx + 1}")
-                            put("durationMs", part.partDurationMs ?: 0)
-                            put("driveFileId", part.driveFileId ?: "")
-                            put("transcript", part.transcription)
-                        }
-                        partsArray.put(partObj)
-                    }
-                    put("parts", partsArray)
-                }
-
-                uploadCompanionDocument(
-                    token = token,
-                    targetFolderId = targetFolderId,
-                    companionFileName = companionFileName,
-                    contentJsonString = companionJson.toString(2)
-                )
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
-    }
-
-
-    fun saveWebClientId(context: Context, id: String) {
-        webClientId = id.trim()
-        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
-        prefs.edit().putString("custom_web_client_id", webClientId).apply()
-        _uiState.value = _uiState.value.copy(
-            webClientId = webClientId,
-            infoMessage = if (webClientId.isNotBlank()) "OAuth Web Client ID updated" else "Web Client ID reset to default"
-        )
     }
 
     fun saveCustomApiKey(context: Context, key: String) {
@@ -1070,12 +928,7 @@ class MainViewModel : ViewModel() {
                         val localFile = File(context.cacheDir, "batch_${customTimestamp}_${index}.${audioInfo.extension}")
                         localFile.writeBytes(bytes)
                         val localUriString = Uri.fromFile(localFile).toString()
-
-                        var driveFileId: String? = null
-                        if (_uiState.value.isDriveConnected) {
-                            val fileName = displayName ?: "batch_recording_${customTimestamp}.${audioInfo.extension}"
-                            driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
-                        }
+                        val driveFileId: String? = null
 
                         transcribeAndSaveSync(context, bytes, audioInfo.normalizedMimeForGemini, localUriString, customTimestamp, driveFileId, displayName)
                         successCount++
@@ -1227,21 +1080,7 @@ class MainViewModel : ViewModel() {
             )
 
             repository?.insert(transcriptionRecord)
-
-            if (_uiState.value.isDriveConnected) {
-                organizeDriveArtifacts(
-                    context = context,
-                    driveFileId = driveFileId,
-                    sessionTitle = summary?.take(30),
-                    locationName = locationName,
-                    activeSpeakersCsv = activeSpeakersCsv,
-                    mentionedPeopleCsv = mentionedPeopleCsv,
-                    summary = summary,
-                    transcription = cleanTranscript,
-                    timestamp = recordTimestamp,
-                    originalFileName = originalFileName
-                )
-            }
+            syncRecordToFirestore(transcriptionRecord)
         } catch (e: Exception) {
             val errorMsg = extractErrorMessage(e)
             _uiState.value = _uiState.value.copy(error = "Transcription error: $errorMsg")
@@ -1617,13 +1456,7 @@ class MainViewModel : ViewModel() {
                 localFile.writeBytes(bytes)
                 val localUriString = Uri.fromFile(localFile).toString()
                 
-                // --- Google Drive Auto-Upload ---
-                var driveFileId: String? = null
-                if (_uiState.value.isDriveConnected) {
-                    _uiState.value = _uiState.value.copy(statusMessage = "Uploading audio to Google Drive...", progress = 0.4f)
-                    val fileName = displayName ?: "recording_${customTimestamp}.${audioInfo.extension}"
-                    driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
-                }
+                val driveFileId: String? = null
                 
                 transcribeAudioBytes(context, bytes, audioInfo.normalizedMimeForGemini, localUriString, customTimestamp, driveFileId, displayName)
             } catch (e: Exception) {
@@ -1917,34 +1750,14 @@ class MainViewModel : ViewModel() {
                     }
                 }
 
-                // --- Google Drive Contextual Automation & Folder Organization ---
-                if (_uiState.value.isDriveConnected && driveFileId != null) {
-                    _uiState.value = _uiState.value.copy(
-                        statusMessage = "Organizing Google Drive: renaming, folders & companion upload...",
-                        progress = 0.95f
-                    )
-                    organizeDriveArtifacts(
-                        context = context,
-                        driveFileId = driveFileId,
-                        sessionTitle = parsedTitle,
-                        locationName = locationName,
-                        activeSpeakersCsv = activeSpeakersCsv,
-                        mentionedPeopleCsv = mentionedPeopleCsv,
-                        summary = finalSummaryText,
-                        transcription = resultText,
-                        timestamp = recordTimestamp,
-                        originalFileName = originalFileName
-                    )
-                }
+                syncRecordToFirestore(finalRecord)
 
                 _uiState.value = _uiState.value.copy(
                     isLoading = false, 
                     statusMessage = null,
                     progress = null,
                     lastSummary = finalSummaryText,
-                    infoMessage = if (_uiState.value.isDriveConnected && driveFileId != null) {
-                        "Synced & organized in Google Drive: [${SimpleDateFormat("yyyy-MM-dd", Locale.US).format(Date(recordTimestamp))}] ${locationName ?: parsedTitle ?: "Recording"}"
-                    } else null
+                    infoMessage = "Transcription and summary saved successfully."
                 )
                 
             } catch (e: Exception) {
@@ -2102,16 +1915,7 @@ class MainViewModel : ViewModel() {
                     localFile.writeBytes(bytes)
                     val localUriString = Uri.fromFile(localFile).toString()
 
-                    // --- Google Drive Auto-Upload ---
-                    var driveFileId: String? = null
-                    if (_uiState.value.isDriveConnected) {
-                        _uiState.value = _uiState.value.copy(
-                            statusMessage = "Uploading Part $partNumber to Google Drive...",
-                            progress = ((index.toFloat() + 0.15f) / totalParts) * 0.85f
-                        )
-                        val fileName = fileItem.displayName ?: "session_${sessionId}_part${partNumber}.${audioInfo.extension}"
-                        driveFileId = uploadAudioToDrive(context, bytes, fileName, audioInfo.mimeType)
-                    }
+                    val driveFileId: String? = null
 
                     _uiState.value = _uiState.value.copy(
                         statusMessage = "Transcribing Part $partNumber of $totalParts: ${fileItem.displayName}...",
@@ -2213,23 +2017,7 @@ class MainViewModel : ViewModel() {
                 for (part in partResults) {
                     val updatedPart = part.copy(summary = masterSummaryResult)
                     repository?.insert(updatedPart)
-                }
-
-                // --- Google Drive Contextual Automation & Folder Organization for Multi-Part Session ---
-                if (_uiState.value.isDriveConnected) {
-                    _uiState.value = _uiState.value.copy(
-                        statusMessage = "Organizing Google Drive session folders & companion documents...",
-                        progress = 0.96f
-                    )
-                    organizeDriveSequentialSessionArtifacts(
-                        context = context,
-                        partResults = partResults,
-                        files = files,
-                        sessionTitle = sessionTitle,
-                        masterSummary = masterSummaryResult,
-                        combinedTranscripts = combinedTranscripts,
-                        timestamp = files.firstOrNull()?.parsedTimestamp ?: System.currentTimeMillis()
-                    )
+                    syncRecordToFirestore(updatedPart)
                 }
 
                 _uiState.value = _uiState.value.copy(
@@ -2238,7 +2026,7 @@ class MainViewModel : ViewModel() {
                     progress = null,
                     lastTranscription = combinedTranscripts,
                     lastSummary = masterSummaryResult,
-                    infoMessage = "Sequential session '$sessionTitle' ($totalParts parts) transcribed, summarized, and organized in Google Drive successfully!"
+                    infoMessage = "Sequential session '$sessionTitle' ($totalParts parts) transcribed and summarized successfully!"
                 )
 
             } catch (e: Exception) {
@@ -2335,10 +2123,12 @@ class MainViewModel : ViewModel() {
             }
             
             try {
-                if (getAuthSafe()?.currentUser != null) {
-                    firestore.collection("transcriptions")
+                val user = getAuthSafe()?.currentUser
+                if (user != null && !user.isAnonymous) {
+                    firestore.collection("users").document(user.uid)
+                        .collection("transcriptions")
                         .document(updatedRecord.id)
-                        .set(updatedRecord)
+                        .set(updatedRecord.copy(userId = user.uid))
                 }
             } catch (e: Exception) {
                 // Ignore
@@ -2351,9 +2141,11 @@ class MainViewModel : ViewModel() {
             repository?.deleteTranscriptions(ids)
             
             try {
-                if (getAuthSafe()?.currentUser != null) {
+                val user = getAuthSafe()?.currentUser
+                if (user != null && !user.isAnonymous) {
                     ids.forEach { id ->
-                        firestore.collection("transcriptions")
+                        firestore.collection("users").document(user.uid)
+                            .collection("transcriptions")
                             .document(id)
                             .delete()
                     }
@@ -2371,7 +2163,7 @@ class MainViewModel : ViewModel() {
     }
 
     fun syncTranscriptions() {
-        loadTranscriptions()
+        syncTranscriptionsWithCloud()
     }
 
     private fun saveTranscription(text: String, audioUriString: String? = null, summary: String? = null) {
@@ -2395,11 +2187,12 @@ class MainViewModel : ViewModel() {
             repository?.insert(record)
         }
 
-        if (user != null) {
+        if (user != null && !user.isAnonymous) {
             try {
-                firestore.collection("transcriptions")
+                firestore.collection("users").document(user.uid)
+                    .collection("transcriptions")
                     .document(record.id)
-                    .set(record)
+                    .set(record.copy(userId = user.uid))
             } catch (e: Exception) {
                 // Ignore gracefully as it is already stored in local Room DB
             }
@@ -2413,17 +2206,17 @@ class MainViewModel : ViewModel() {
         } catch (e: Exception) {
             return
         }
-        if (user == null) return
+        if (user == null || user.isAnonymous) return
         
         try {
-            firestore.collection("transcriptions")
-                .whereEqualTo("userId", user.uid)
+            firestore.collection("users").document(user.uid)
+                .collection("transcriptions")
                 .get()
                 .addOnSuccessListener { snapshot ->
                     val list = snapshot.documents.mapNotNull { it.toObject(TranscriptionRecord::class.java) }
                     viewModelScope.launch {
                         list.forEach { record ->
-                            repository?.insert(record)
+                            repository?.insert(record.copy(userId = user.uid))
                         }
                     }
                 }
@@ -2778,12 +2571,13 @@ class MainViewModel : ViewModel() {
 
                 // Sync to Firestore if signed in
                 val user = getAuthSafe()?.currentUser
-                if (user != null) {
+                if (user != null && !user.isAnonymous) {
                     try {
                         parsedRecords.forEach { rec ->
-                            firestore.collection("transcriptions")
+                            firestore.collection("users").document(user.uid)
+                                .collection("transcriptions")
                                 .document(rec.id)
-                                .set(rec)
+                                .set(rec.copy(userId = user.uid))
                         }
                     } catch (e: Exception) {
                         // ignore cloud error if offline
@@ -2943,16 +2737,6 @@ class MainViewModel : ViewModel() {
             }
         }
     }
-
-    fun onGoogleSignInSuccess(email: String?) {
-        _uiState.value = _uiState.value.copy(
-            isAuthenticated = true,
-            isAnonymous = false,
-            userEmail = email ?: "Google User",
-            infoMessage = "Signed in successfully as ${email ?: "Google User"}"
-        )
-        loadTranscriptions()
-    }
 }
 
 enum class AiProvider {
@@ -2991,9 +2775,6 @@ data class UiState(
     val openRouterApiKey: String = "",
     val groqApiKey: String = "",
     val aiProvider: AiProvider = AiProvider.GEMINI,
-    val webClientId: String = "",
-    val isDriveConnected: Boolean = false,
-    val driveEmail: String? = null,
     val speakers: List<SpeakerProfile> = emptyList(),
     val locations: List<com.example.db.LocationProfile> = emptyList(),
     val biometricSensitivity: String = "Balanced",

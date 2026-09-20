@@ -509,7 +509,6 @@ fun PlaybackScreen(
     speakers: List<SpeakerProfile> = emptyList(),
     onAssignGoldenSample: ((speakerId: String, audioUri: String, startMs: Int, endMs: Int, recordingTitle: String) -> Unit)? = null,
     onSaveNewSpeaker: ((SpeakerProfile) -> Unit)? = null,
-    onGetDriveStreamInfo: (suspend (String) -> Pair<String, Map<String, String>>?)? = null,
     onUpdateConfidenceAndSpeakers: ((recordId: String, newSpeakers: String, newConfidence: String) -> Unit)? = null,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
@@ -664,13 +663,12 @@ fun PlaybackScreen(
 
     var mediaPlayer by remember { mutableStateOf<MediaPlayer?>(null) }
 
-    // Core Gapless Player Initializer with Google Drive streaming support
+    // Core Gapless Player Initializer
     fun initPlayerForPart(partIdx: Int, autoPlay: Boolean = false, startPosMs: Int = 0) {
         val targetPart = orderedParts.getOrNull(partIdx)
         if (targetPart == null) return
 
         val uriStr = targetPart.audioUri
-        val driveId = targetPart.driveFileId
 
         var localFileExists = false
         if (!uriStr.isNullOrBlank()) {
@@ -688,83 +686,6 @@ fun PlaybackScreen(
             } catch (e: java.lang.Exception) {
                 // Ignore
             }
-        }
-
-        if (!localFileExists && !driveId.isNullOrBlank() && onGetDriveStreamInfo != null) {
-            isPlaying = false
-            hasAudioError = false
-            audioErrorMessage = "Streaming audio from Google Drive..."
-            scope.launch {
-                val streamInfo = onGetDriveStreamInfo(driveId)
-                if (streamInfo != null) {
-                    val (streamUrl, headers) = streamInfo
-                    try {
-                        mediaPlayer?.release()
-                        val player = MediaPlayer()
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.ICE_CREAM_SANDWICH) {
-                            player.setDataSource(context, Uri.parse(streamUrl), headers)
-                        } else {
-                            player.setDataSource(streamUrl)
-                        }
-                        player.setOnPreparedListener { mp ->
-                            val actualDur = mp.duration
-                            if (actualDur > 0) {
-                                partDurationsMap[partIdx] = actualDur
-                            }
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                try {
-                                    mp.playbackParams = mp.playbackParams.setSpeed(playbackSpeed)
-                                } catch (e: Exception) {}
-                            }
-                            if (startPosMs > 0) {
-                                mp.seekTo(startPosMs.coerceIn(0, actualDur))
-                            }
-                            if (autoPlay) {
-                                mp.start()
-                                isPlaying = true
-                            }
-                            hasAudioError = false
-                            audioErrorMessage = null
-                        }
-
-                        player.setOnCompletionListener {
-                            if (partIdx < orderedParts.size - 1) {
-                                val nextIdx = partIdx + 1
-                                currentPartIndex = nextIdx
-                                currentPartPositionMs = 0
-                                initPlayerForPart(nextIdx, autoPlay = true, startPosMs = 0)
-                                Toast.makeText(
-                                    context,
-                                    "Advancing seamlessly to Part ${nextIdx + 1} of ${orderedParts.size}",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                isPlaying = false
-                                currentPartPositionMs = partDurationsMap[partIdx] ?: 0
-                            }
-                        }
-
-                        player.setOnErrorListener { _, what, extra ->
-                            hasAudioError = true
-                            audioErrorMessage = "Drive Playback error ($what, $extra)"
-                            isPlaying = false
-                            false
-                        }
-
-                        player.prepareAsync()
-                        mediaPlayer = player
-                    } catch (e: Exception) {
-                        hasAudioError = true
-                        audioErrorMessage = "Drive stream failed: ${e.message}"
-                        isPlaying = false
-                    }
-                } else {
-                    hasAudioError = true
-                    audioErrorMessage = "Failed to load Google Drive stream."
-                    isPlaying = false
-                }
-            }
-            return
         }
 
         if (uriStr.isNullOrBlank()) {

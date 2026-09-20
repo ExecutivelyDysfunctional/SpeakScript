@@ -149,7 +149,8 @@
 - **Pixel 8 Pro Touch Ergonomics**: Enforced minimum 48dp x 48dp touch targets across all buttons, icon actions, search inputs, and chips.
 - **Multi-Provider AI Settings (BYOK)**: Key management and provider selection for Google Gemini, OpenRouter, and Groq.
 - **Theme Customization**: Full Material 3 support for System Default, Light Mode, and Dark Mode.
-- **Optional Cloud & Account Sync**: Google Sign-In via Credential Manager, Email/Password sign-in, and Firestore syncing.
+- **Account & Cloud Synchronization**: Firebase Email/Password authentication, real-time Firestore sync for transcripts and multi-part sessions, and full local offline JSON import/export data portability.
+- **Google Drive Removal Completed**: Fully decoupled legacy Google Drive dependencies, API services, and connection UI in favor of unified local storage and Firebase Cloud sync.
 
 ---
 
@@ -159,6 +160,7 @@
 ---
 
 ## [Out of Scope]
+- **Google Drive Legacy Sync**: Completely removed in favor of Firebase Firestore and local device storage.
 - **Smart Recurrence & Action Item Tracker**: Highlight recurring action items mentioned across different recorded days (moved to out of scope per user direction).
 - **Direct Microphone Voice Recording**: In-app live microphone recording is excluded; the app focuses on importing and analyzing stored audio files.
 - **Custom Secondary Backend / Node.js Server**: Keep the app entirely client-side and offline-first with optional direct Firebase sync.
@@ -182,15 +184,14 @@
 - `app/src/main/java/com/example/util/GoogleSignInErrorClassifier.kt`: Classifier mapping CredentialManager exceptions to specific GoogleSignInResult states.
 - `app/src/test/java/com/example/AudioAndAuthFixesTest.kt`: Unit tests verifying AudioConfigHelper buffer/sample rate calculations and GoogleSignInErrorClassifier exception mapping.
 - `app/src/test/java/com/example/ApiKeySecurityTest.kt`: Unit tests verifying secret sanitization in config files, gitignore protection, and API key redaction.
-- `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, Google Drive, and Known Speakers navigation link.
+- `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, Firebase cloud sync, and Known Speakers navigation link.
 - `app/src/main/java/com/example/util/AudioSliceExtractor.kt`: Audio segment extraction utility using MediaExtractor/MediaMuxer for verified Golden Sample biometric slices.
 - `app/src/main/java/com/example/api/GeminiApiService.kt`: Retrofit client interfaces, data transfer models, and network clients for Gemini, OpenRouter, and Groq.
-- `app/src/main/java/com/example/api/GoogleDriveApiService.kt`: Google Drive REST v3 API client interface, folder creation, search, file metadata patching, and multi-part media upload.
 - `app/src/main/java/com/example/db/Transcription.kt`: Room Entity for audio transcriptions, speaker labels, location, and audio file paths.
 - `app/src/main/java/com/example/db/SpeakerProfile.kt`: Room Entity for known speakers, color hex badges, recording statistics, and Golden Sample audio segment references.
 - `app/src/main/java/com/example/db/SpeakerDao.kt`: Data access object for speaker profile queries, upserts, deletion, and golden sample management.
 - `app/src/main/java/com/example/db/SpeakerRepository.kt`: Repository layer mediating between Room SpeakerDao and MainViewModel.
-- `app/src/main/java/com/example/db/AppDatabase.kt`: Room database initialization and V10 migration definitions.
+- `app/src/main/java/com/example/db/AppDatabase.kt`: Room database initialization, schema versioning, and migration definitions.
 - `app/src/main/java/com/example/db/TranscriptionDao.kt`: Data access object for Room database queries and mutations.
 - `app/src/main/java/com/example/db/TranscriptionRepository.kt`: Repository layer mediating between Room DAO and the ViewModel.
 - `app/src/main/java/com/example/ui/theme/Color.kt`: M3 color definitions.
