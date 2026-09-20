@@ -6,6 +6,12 @@
 ---
 
 ## [Implemented]
+- **Google API Key Remediation & Secret Leak Prevention**:
+  - **Neutralized Exposed Key**: Removed the hardcoded Google API key from `firebase-applet-config.json` and replaced it with a safe placeholder (`AIzaSy_REDACTED_USE_AI_STUDIO_SECRETS_PANEL`).
+  - **Git Credential Safeguards**: Updated `.gitignore` with comprehensive rules ignoring `.env`, `firebase-applet-config.json`, `google-services.json`, `secrets.properties`, `local.properties`, and keystores (`*.jks`, `*.keystore`, `*.p12`).
+  - **Automated CI Secret Audit**: Added an automated pre-build secret scanning step (`Secret Leak Prevention & Security Audit`) in `.github/workflows/build-apk.yml` that halts builds if unmasked Google API keys (`AIzaSy...`) or missing `.gitignore` rules are detected.
+  - **Security Unit Testing Suite (`ApiKeySecurityTest.kt`)**: Added automated JUnit tests verifying that config files contain no exposed API keys, sensitive files are gitignored, `.env.example` contains only placeholders, and regex key masking successfully redacts various API key formats.
+  - **In-App Security Guidance**: Added an explicit security notice card in `SettingsScreen.kt` informing users about secret protection, environment variable usage, and restricting API keys to the Android package name and SHA-1 certificate in Google Cloud Console.
 - **Bluetooth Microphone Recording Reliability & Route Management**:
   - **Android 12+ (API 31+) Communication Device Routing**: Integrated modern `AudioManager.setCommunicationDevice()` and `clearCommunicationDevice()` using `AudioDeviceInfo` (`TYPE_BLUETOOTH_SCO`, `TYPE_BLE_HEADSET`, `TYPE_BLUETOOTH_A2DP`, `TYPE_HEARING_AID`), ensuring reliable Bluetooth earbud / headset microphone capture on newer Android versions.
   - **Legacy SCO Fallback & `MODE_IN_COMMUNICATION`**: Handled legacy `startBluetoothSco()` and `isBluetoothScoOn` routing for API < 31, with strict audio mode lifecycle management (`MODE_IN_COMMUNICATION` during recording, restored to `MODE_NORMAL` on stop).
@@ -175,6 +181,7 @@
 - `app/src/main/java/com/example/util/AudioConfigHelper.kt`: Utility for calculating valid buffer sizes and probing supported sample rates for AudioRecord.
 - `app/src/main/java/com/example/util/GoogleSignInErrorClassifier.kt`: Classifier mapping CredentialManager exceptions to specific GoogleSignInResult states.
 - `app/src/test/java/com/example/AudioAndAuthFixesTest.kt`: Unit tests verifying AudioConfigHelper buffer/sample rate calculations and GoogleSignInErrorClassifier exception mapping.
+- `app/src/test/java/com/example/ApiKeySecurityTest.kt`: Unit tests verifying secret sanitization in config files, gitignore protection, and API key redaction.
 - `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, Google Drive, and Known Speakers navigation link.
 - `app/src/main/java/com/example/util/AudioSliceExtractor.kt`: Audio segment extraction utility using MediaExtractor/MediaMuxer for verified Golden Sample biometric slices.
 - `app/src/main/java/com/example/api/GeminiApiService.kt`: Retrofit client interfaces, data transfer models, and network clients for Gemini, OpenRouter, and Groq.

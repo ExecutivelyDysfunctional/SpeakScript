@@ -15,4 +15,12 @@
 .cxx
 local.properties
 .env
+.env.*
+!.env.example
+secrets.properties
+google-services.json
+firebase-applet-config.json
+*.jks
+*.keystore
+*.p12
 debug.keystore

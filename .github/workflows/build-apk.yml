@@ -44,6 +44,43 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Secret Leak Prevention & Security Audit
+        shell: bash
+        run: |
+          echo "::group::🛡️ SECRET LEAK DETECTION & SECURITY AUDIT"
+          echo "Scanning workspace for exposed API keys and sensitive credentials..."
+          FAILED=0
+
+          # Check for exposed Google API keys (AIzaSy...) outside of .env and .example
+          # We look for AIza followed by 35 alphanumeric, underscore, or hyphen characters
+          MATCHES=$(grep -rEn "AIzaSy[0-9A-Za-z_-]{33}" . \
+            --exclude-dir={.git,.gradle,build,outputs} \
+            --exclude="*.log" \
+            --exclude=".env" \
+            --exclude="ExampleUnitTest.kt" \
+            --exclude="ApiKeySecurityTest.kt" 2>/dev/null || true)
+
+          if [ -n "$MATCHES" ]; then
+            echo "::error::🚨 CRITICAL SECURITY ALERT: Real unmasked Google API Key pattern found in codebase!"
+            echo "$MATCHES"
+            FAILED=1
+          else
+            echo "✅ No exposed Google API keys found in tracked source files."
+          fi
+
+          # Ensure .gitignore protects .env and sensitive configs
+          if ! grep -q "\.env" .gitignore 2>/dev/null; then
+            echo "::error::🚨 Security Alert: .env is missing from .gitignore!"
+            FAILED=1
+          fi
+
+          if [ $FAILED -ne 0 ]; then
+            echo "Audit failed! Halting build to prevent publishing sensitive credentials."
+            exit 1
+          fi
+          echo "Security audit passed successfully."
+          echo "::endgroup::"
+
       - name: Pre-Build System & Environment Audit
         shell: bash
         run: |
