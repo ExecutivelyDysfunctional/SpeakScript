@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "576632165085",
+    "project_id": "transcribe-ai-adcg",
+    "storage_bucket": "transcribe-ai-adcg.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:576632165085:android:d8d66b1ae21af8a8290134",
+        "android_client_info": {
+          "package_name": "com.aistudio.transcribeai.xyzq"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCLP1xnIwzAv_-AuAxong3GjnKV3m9KvHU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
