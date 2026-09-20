@@ -380,6 +380,7 @@ class MainViewModel : ViewModel() {
         val providerName = prefs.getString("ai_provider", AiProvider.GEMINI.name) ?: AiProvider.GEMINI.name
         aiProvider = try { AiProvider.valueOf(providerName) } catch (e: Exception) { AiProvider.GEMINI }
 
+        val isAudioCloudSync = prefs.getBoolean("audio_cloud_sync_enabled", false)
         val bioSensitivity = prefs.getString("biometric_sensitivity", "Balanced") ?: "Balanced"
         val bioSliceSec = prefs.getInt("biometric_slice_duration", 10)
         val bioMaxSpeakers = prefs.getInt("biometric_max_speakers", 5)
@@ -390,6 +391,7 @@ class MainViewModel : ViewModel() {
             openRouterApiKey = openRouterApiKey,
             groqApiKey = groqApiKey,
             aiProvider = aiProvider,
+            isAudioCloudSyncEnabled = isAudioCloudSync,
             biometricSensitivity = bioSensitivity,
             biometricSliceDurationSec = bioSliceSec,
             biometricMaxSpeakers = bioMaxSpeakers,
@@ -520,6 +522,11 @@ class MainViewModel : ViewModel() {
                 viewModelScope.launch {
                     try {
                         repository?.updateUserIdForLocalRecords("local_user", uid)
+                        repository?.updateUserIdForLocalRecords("", uid)
+                        speakerRepository?.updateUserIdForLocalRecords("local_user", uid)
+                        speakerRepository?.updateUserIdForLocalRecords("", uid)
+                        locationRepository?.updateUserIdForLocalRecords("local_user", uid)
+                        locationRepository?.updateUserIdForLocalRecords("", uid)
                     } catch (e: Exception) {
                         // Ignore
                     }
@@ -529,6 +536,7 @@ class MainViewModel : ViewModel() {
                     isAuthenticated = true,
                     isAnonymous = false,
                     userEmail = user?.email ?: trimmedEmail,
+                    isEmailVerified = user?.isEmailVerified ?: false,
                     infoMessage = "Signed in successfully as ${user?.email ?: trimmedEmail}!"
                 )
                 onResult(true, null)
@@ -571,6 +579,11 @@ class MainViewModel : ViewModel() {
                     viewModelScope.launch {
                         try {
                             repository?.updateUserIdForLocalRecords("local_user", uid)
+                            repository?.updateUserIdForLocalRecords("", uid)
+                            speakerRepository?.updateUserIdForLocalRecords("local_user", uid)
+                            speakerRepository?.updateUserIdForLocalRecords("", uid)
+                            locationRepository?.updateUserIdForLocalRecords("local_user", uid)
+                            locationRepository?.updateUserIdForLocalRecords("", uid)
                         } catch (e: Exception) {}
                         syncTranscriptionsWithCloud()
                     }
@@ -578,6 +591,7 @@ class MainViewModel : ViewModel() {
                         isAuthenticated = true,
                         isAnonymous = false,
                         userEmail = user?.email ?: trimmedEmail,
+                        isEmailVerified = user?.isEmailVerified ?: false,
                         infoMessage = "Account created and local data linked successfully!"
                     )
                     onResult(true, null)
@@ -603,6 +617,11 @@ class MainViewModel : ViewModel() {
                 viewModelScope.launch {
                     try {
                         repository?.updateUserIdForLocalRecords("local_user", uid)
+                        repository?.updateUserIdForLocalRecords("", uid)
+                        speakerRepository?.updateUserIdForLocalRecords("local_user", uid)
+                        speakerRepository?.updateUserIdForLocalRecords("", uid)
+                        locationRepository?.updateUserIdForLocalRecords("local_user", uid)
+                        locationRepository?.updateUserIdForLocalRecords("", uid)
                     } catch (e: Exception) {}
                     syncTranscriptionsWithCloud()
                 }
@@ -610,6 +629,7 @@ class MainViewModel : ViewModel() {
                     isAuthenticated = true,
                     isAnonymous = false,
                     userEmail = user?.email ?: email,
+                    isEmailVerified = user?.isEmailVerified ?: false,
                     infoMessage = "Account created successfully as $email!"
                 )
                 onResult(true, null)
@@ -623,6 +643,31 @@ class MainViewModel : ViewModel() {
                 }
                 onResult(false, msg)
             }
+    }
+
+    fun sendEmailVerification(onResult: (Boolean, String?) -> Unit) {
+        val user = getAuthSafe()?.currentUser
+        if (user == null || user.isAnonymous) {
+            onResult(false, "No authenticated user signed in.")
+            return
+        }
+        user.sendEmailVerification()
+            .addOnSuccessListener {
+                _uiState.value = _uiState.value.copy(infoMessage = "Verification email sent to ${user.email}!")
+                onResult(true, null)
+            }
+            .addOnFailureListener { e ->
+                onResult(false, e.localizedMessage ?: "Failed to send verification email.")
+            }
+    }
+
+    fun toggleAudioCloudSync(context: Context, enabled: Boolean) {
+        val prefs = context.getSharedPreferences("transcribe_prefs", Context.MODE_PRIVATE)
+        prefs.edit().putBoolean("audio_cloud_sync_enabled", enabled).apply()
+        _uiState.value = _uiState.value.copy(
+            isAudioCloudSyncEnabled = enabled,
+            infoMessage = if (enabled) "Cloud Audio Backup enabled" else "Cloud Audio Backup disabled"
+        )
     }
 
     fun sendPasswordResetEmail(email: String, onResult: (Boolean, String?) -> Unit) {
@@ -653,6 +698,7 @@ class MainViewModel : ViewModel() {
                 isAuthenticated = false,
                 isAnonymous = true,
                 userEmail = null,
+                isEmailVerified = false,
                 infoMessage = "Signed out. Working in Guest Mode (Offline)."
             )
         } catch (e: Exception) {
@@ -664,7 +710,7 @@ class MainViewModel : ViewModel() {
         val user = getAuthSafe()?.currentUser
         if (user == null || user.isAnonymous) {
             _uiState.value = _uiState.value.copy(
-                infoMessage = "Guest Mode active: Transcriptions are safely preserved in local Room storage."
+                infoMessage = "Guest Mode active: Data is safely preserved in local Room storage."
             )
             return
         }
@@ -672,6 +718,7 @@ class MainViewModel : ViewModel() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true, statusMessage = "Syncing with cloud vault...")
             try {
+                // 1. Sync Transcriptions
                 val userTranscriptionsRef = firestore.collection("users").document(uid).collection("transcriptions")
                 val snapshot = withContext(Dispatchers.IO) {
                     com.google.android.gms.tasks.Tasks.await(userTranscriptionsRef.get())
@@ -679,12 +726,10 @@ class MainViewModel : ViewModel() {
                 val cloudRecords = snapshot.documents.mapNotNull { it.toObject(Transcription::class.java) }
                 val cloudMap = cloudRecords.associateBy { it.id }
 
-                // Insert/merge cloud records into local Room
                 cloudRecords.forEach { record ->
                     repository?.insert(record.copy(userId = uid))
                 }
 
-                // Upload local records that are not in cloud or newer
                 val localList = repository?.getAllTranscriptionsSync() ?: emptyList()
                 localList.forEach { localRec ->
                     val cloudRec = cloudMap[localRec.id]
@@ -693,17 +738,53 @@ class MainViewModel : ViewModel() {
                     }
                 }
 
+                // 2. Sync Speaker Profiles
+                try {
+                    val userSpeakersRef = firestore.collection("users").document(uid).collection("speakers")
+                    val speakerSnapshot = withContext(Dispatchers.IO) {
+                        com.google.android.gms.tasks.Tasks.await(userSpeakersRef.get())
+                    }
+                    val cloudSpeakers = speakerSnapshot.documents.mapNotNull { it.toObject(SpeakerProfile::class.java) }
+                    cloudSpeakers.forEach { sp ->
+                        speakerRepository?.insert(sp.copy(userId = uid))
+                    }
+                    val localSpeakers = speakerRepository?.getAllSpeakersSync() ?: emptyList()
+                    localSpeakers.forEach { localSp ->
+                        userSpeakersRef.document(localSp.id).set(localSp.copy(userId = uid))
+                    }
+                } catch (e: Exception) {
+                    // Ignore speaker sync error
+                }
+
+                // 3. Sync Location Profiles
+                try {
+                    val userLocationsRef = firestore.collection("users").document(uid).collection("locations")
+                    val locationSnapshot = withContext(Dispatchers.IO) {
+                        com.google.android.gms.tasks.Tasks.await(userLocationsRef.get())
+                    }
+                    val cloudLocations = locationSnapshot.documents.mapNotNull { it.toObject(com.example.db.LocationProfile::class.java) }
+                    cloudLocations.forEach { loc ->
+                        locationRepository?.insert(loc.copy(userId = uid))
+                    }
+                    val localLocations = locationRepository?.getAllLocationsSync() ?: emptyList()
+                    localLocations.forEach { localLoc ->
+                        userLocationsRef.document(localLoc.id).set(localLoc.copy(userId = uid))
+                    }
+                } catch (e: Exception) {
+                    // Ignore location sync error
+                }
+
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     statusMessage = null,
-                    infoMessage = "Cloud sync complete (${cloudRecords.size} cloud records synced with local vault).",
+                    infoMessage = "Cloud sync complete (${cloudRecords.size} transcriptions synced with cloud vault).",
                     error = null
                 )
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     statusMessage = null,
-                    infoMessage = "Offline fallback active: Local transcriptions are safely stored on device.",
+                    infoMessage = "Offline fallback active: Local data is safely stored on device.",
                     error = null
                 )
             }
@@ -719,6 +800,32 @@ class MainViewModel : ViewModel() {
                     .set(record.copy(userId = user.uid))
             } catch (e: Exception) {
                 // Ignore gracefully as it is safely stored in local Room DB
+            }
+        }
+    }
+
+    fun syncSpeakerToFirestore(speaker: SpeakerProfile) {
+        val user = getAuthSafe()?.currentUser
+        if (user != null && !user.isAnonymous) {
+            try {
+                firestore.collection("users").document(user.uid)
+                    .collection("speakers").document(speaker.id)
+                    .set(speaker.copy(userId = user.uid))
+            } catch (e: Exception) {
+                // Ignore
+            }
+        }
+    }
+
+    fun syncLocationToFirestore(location: com.example.db.LocationProfile) {
+        val user = getAuthSafe()?.currentUser
+        if (user != null && !user.isAnonymous) {
+            try {
+                firestore.collection("users").document(user.uid)
+                    .collection("locations").document(location.id)
+                    .set(location.copy(userId = user.uid))
+            } catch (e: Exception) {
+                // Ignore
             }
         }
     }
@@ -872,6 +979,7 @@ class MainViewModel : ViewModel() {
     fun saveLocation(location: com.example.db.LocationProfile) {
         viewModelScope.launch {
             locationRepository?.insert(location)
+            syncLocationToFirestore(location)
             _uiState.value = _uiState.value.copy(
                 infoMessage = "Venue preset '${location.name}' saved (${location.tier} Tier)"
             )
@@ -2139,20 +2247,6 @@ class MainViewModel : ViewModel() {
     fun deleteTranscriptions(ids: List<String>) {
         viewModelScope.launch {
             repository?.deleteTranscriptions(ids)
-            
-            try {
-                val user = getAuthSafe()?.currentUser
-                if (user != null && !user.isAnonymous) {
-                    ids.forEach { id ->
-                        firestore.collection("users").document(user.uid)
-                            .collection("transcriptions")
-                            .document(id)
-                            .delete()
-                    }
-                }
-            } catch (e: Exception) {
-                // Ignore
-            }
         }
     }
 
@@ -2603,6 +2697,7 @@ class MainViewModel : ViewModel() {
     fun saveSpeaker(speaker: SpeakerProfile) {
         viewModelScope.launch {
             speakerRepository?.insert(speaker)
+            syncSpeakerToFirestore(speaker)
             _uiState.value = _uiState.value.copy(
                 infoMessage = "Saved speaker profile for ${speaker.name}"
             )
@@ -2759,6 +2854,8 @@ data class UiState(
     val isAuthenticated: Boolean = false,
     val isAnonymous: Boolean = true,
     val userEmail: String? = null,
+    val isEmailVerified: Boolean = false,
+    val isAudioCloudSyncEnabled: Boolean = false,
     val isLoading: Boolean = false,
     val statusMessage: String? = null,
     val progress: Float? = null,

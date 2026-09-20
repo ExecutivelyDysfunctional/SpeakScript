@@ -34,10 +34,11 @@ class ApiKeySecurityTest {
     @Test
     fun testGitignoreProtectsSensitiveFiles() {
         val candidates = listOf(
-            File(".gitignore"),
-            File("../.gitignore")
+            File("../.gitignore"),
+            File(".gitignore")
         )
-        val gitignore = candidates.firstOrNull { it.exists() }
+        val gitignore = candidates.firstOrNull { it.exists() && it.readText().contains(".env") }
+            ?: candidates.firstOrNull { it.exists() }
         if (gitignore != null) {
             val lines = gitignore.readLines().map { it.trim() }
             assertTrue(".env must be in .gitignore", lines.any { it == ".env" || it == "/.env" })

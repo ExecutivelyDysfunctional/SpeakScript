@@ -16,6 +16,15 @@ interface LocationDao {
     @Query("SELECT * FROM location_profiles ORDER BY name ASC")
     suspend fun getAllLocationsSync(): List<LocationProfile>
 
+    @Query("SELECT * FROM location_profiles WHERE user_id = :userId OR user_id = '' OR user_id = 'local_user' ORDER BY name ASC")
+    fun getLocationsForUser(userId: String): Flow<List<LocationProfile>>
+
+    @Query("SELECT * FROM location_profiles WHERE user_id = :userId OR user_id = '' OR user_id = 'local_user' ORDER BY name ASC")
+    suspend fun getLocationsForUserSync(userId: String): List<LocationProfile>
+
+    @Query("UPDATE location_profiles SET user_id = :newUserId WHERE user_id = :oldUserId OR user_id = ''")
+    suspend fun updateUserIdForLocalRecords(oldUserId: String = "local_user", newUserId: String)
+
     @Query("SELECT * FROM location_profiles WHERE LOWER(name) = LOWER(:name) LIMIT 1")
     suspend fun getLocationByName(name: String): LocationProfile?
 

@@ -5,6 +5,14 @@ import kotlinx.coroutines.flow.Flow
 class LocationRepository(private val locationDao: LocationDao) {
     val allLocations: Flow<List<LocationProfile>> = locationDao.getAllLocations()
 
+    fun getLocationsForUser(userId: String): Flow<List<LocationProfile>> = locationDao.getLocationsForUser(userId)
+
+    suspend fun getLocationsForUserSync(userId: String): List<LocationProfile> = locationDao.getLocationsForUserSync(userId)
+
+    suspend fun updateUserIdForLocalRecords(oldUserId: String = "local_user", newUserId: String) {
+        locationDao.updateUserIdForLocalRecords(oldUserId, newUserId)
+    }
+
     suspend fun getAllLocationsSync(): List<LocationProfile> = locationDao.getAllLocationsSync()
 
     suspend fun getByName(name: String): LocationProfile? = locationDao.getLocationByName(name)

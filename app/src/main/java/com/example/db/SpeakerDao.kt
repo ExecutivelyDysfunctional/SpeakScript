@@ -16,6 +16,15 @@ interface SpeakerDao {
     @Query("SELECT * FROM speaker_profiles ORDER BY name ASC")
     suspend fun getAllSpeakersSync(): List<SpeakerProfile>
 
+    @Query("SELECT * FROM speaker_profiles WHERE user_id = :userId OR user_id = '' OR user_id = 'local_user' ORDER BY name ASC")
+    fun getSpeakersForUser(userId: String): Flow<List<SpeakerProfile>>
+
+    @Query("SELECT * FROM speaker_profiles WHERE user_id = :userId OR user_id = '' OR user_id = 'local_user' ORDER BY name ASC")
+    suspend fun getSpeakersForUserSync(userId: String): List<SpeakerProfile>
+
+    @Query("UPDATE speaker_profiles SET user_id = :newUserId WHERE user_id = :oldUserId OR user_id = ''")
+    suspend fun updateUserIdForLocalRecords(oldUserId: String = "local_user", newUserId: String)
+
     @Query("SELECT * FROM speaker_profiles WHERE id = :id")
     suspend fun getSpeakerById(id: String): SpeakerProfile?
 

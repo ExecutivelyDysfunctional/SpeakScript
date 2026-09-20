@@ -5,6 +5,14 @@ import kotlinx.coroutines.flow.Flow
 class SpeakerRepository(private val speakerDao: SpeakerDao) {
     val allSpeakers: Flow<List<SpeakerProfile>> = speakerDao.getAllSpeakers()
 
+    fun getSpeakersForUser(userId: String): Flow<List<SpeakerProfile>> = speakerDao.getSpeakersForUser(userId)
+
+    suspend fun getSpeakersForUserSync(userId: String): List<SpeakerProfile> = speakerDao.getSpeakersForUserSync(userId)
+
+    suspend fun updateUserIdForLocalRecords(oldUserId: String = "local_user", newUserId: String) {
+        speakerDao.updateUserIdForLocalRecords(oldUserId, newUserId)
+    }
+
     suspend fun getAllSpeakersSync(): List<SpeakerProfile> = speakerDao.getAllSpeakersSync()
 
     suspend fun getById(id: String): SpeakerProfile? = speakerDao.getSpeakerById(id)

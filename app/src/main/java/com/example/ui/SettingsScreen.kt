@@ -39,7 +39,6 @@ import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.foundation.shape.RoundedCornerShape
-import com.google.firebase.auth.FirebaseAuth
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 
@@ -48,6 +47,8 @@ import com.example.VisualInfoBanner
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Audiotrack
+import androidx.compose.material.icons.filled.MarkEmailRead
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -59,6 +60,12 @@ fun SettingsScreen(
     onSaveGroqApiKey: (String) -> Unit,
     onAiProviderChange: (AiProvider) -> Unit,
     onSyncCloud: () -> Unit = {},
+    onSignInEmail: (email: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit = { _, _, _ -> },
+    onRegisterEmail: (email: String, password: String, onResult: (Boolean, String?) -> Unit) -> Unit = { _, _, _ -> },
+    onSignOut: () -> Unit = {},
+    onSendPasswordReset: (email: String, onResult: (Boolean, String?) -> Unit) -> Unit = { _, _ -> },
+    onSendVerificationEmail: (onResult: (Boolean, String?) -> Unit) -> Unit = { _ -> },
+    onToggleAudioCloudSync: (Boolean) -> Unit = {},
     onExportAllJson: () -> Unit = {},
     onImportJson: () -> Unit = {},
     onOpenSpeakers: (() -> Unit)? = null,
@@ -633,7 +640,7 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "All transcriptions, audio files, and speaker profiles work 100% locally on your device.",
+                                    text = "All transcriptions, audio files, venue presets, and speaker profiles work 100% locally on your device in Room database. Create or link an account anytime to sync to Firebase without losing any local data.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -650,7 +657,7 @@ fun SettingsScreen(
                                 modifier = Modifier.size(20.dp)
                             )
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Sign In or Create Cloud Sync Account")
+                            Text("Sign In or Convert Guest Data to Cloud Vault")
                         }
                     } else {
                         Row(
@@ -669,11 +676,46 @@ fun SettingsScreen(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Signed in as ${uiState.userEmail ?: "User"}. Transcriptions are synchronized to Cloud Firestore.",
+                                    text = "Signed in as ${uiState.userEmail ?: "User"}. Transcriptions, speakers, and venue presets are securely synchronized to Cloud Firestore.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
+                        }
+
+                        // Audio Cloud Storage Backup Toggle
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Audiotrack,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                                Column {
+                                    Text(
+                                        text = "Audio Cloud Storage Backup",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                    Text(
+                                        text = "Configurable cloud storage for recorded audio clips alongside transcriptions.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            Switch(
+                                checked = uiState.isAudioCloudSyncEnabled,
+                                onCheckedChange = { onToggleAudioCloudSync(it) }
+                            )
                         }
 
                         Row(
@@ -695,12 +737,8 @@ fun SettingsScreen(
 
                             Button(
                                 onClick = {
-                                    try {
-                                        FirebaseAuth.getInstance().signOut()
-                                        android.widget.Toast.makeText(context, "Signed out successfully", android.widget.Toast.LENGTH_SHORT).show()
-                                    } catch (e: Exception) {
-                                        android.widget.Toast.makeText(context, "Sign out error: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
-                                    }
+                                    onSignOut()
+                                    android.widget.Toast.makeText(context, "Signed out. Switched to local Guest mode.", android.widget.Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.weight(1f),
                                 colors = ButtonDefaults.buttonColors(
@@ -714,26 +752,33 @@ fun SettingsScreen(
                 }
             }
 
-            // Dialog: Email / Password Sign In & Registration
+            // Dialog: Email / Password Sign In, Registration & Reset
             if (showEmailAuthDialog) {
                 var emailInput by remember { mutableStateOf("") }
                 var passwordInput by remember { mutableStateOf("") }
-                var isRegisterMode by remember { mutableStateOf(false) }
+                var authMode by remember { mutableStateOf(0) } // 0: Sign In, 1: Create Account, 2: Forgot Password
                 var emailLoading by remember { mutableStateOf(false) }
                 var emailErrorMessage by remember { mutableStateOf<String?>(null) }
 
                 AlertDialog(
                     onDismissRequest = { if (!emailLoading) showEmailAuthDialog = false },
                     title = {
-                        Text(if (isRegisterMode) "Create Account" else "Sign In with Email")
+                        Text(
+                            when (authMode) {
+                                1 -> "Create Account & Link Data"
+                                2 -> "Reset Password"
+                                else -> "Sign In with Email"
+                            }
+                        )
                     },
                     text = {
                         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Text(
-                                text = if (isRegisterMode) 
-                                    "Enter your email and password to create a sync account."
-                                else 
-                                    "Enter your email and password to sign in and sync your history.",
+                                text = when (authMode) {
+                                    1 -> "Enter your email and password. Your current local recordings and speaker profiles will be automatically linked to this new account."
+                                    2 -> "Enter your email address to receive a password reset link."
+                                    else -> "Enter your email and password to sign in and synchronize with the cloud vault."
+                                },
                                 style = MaterialTheme.typography.bodySmall
                             )
 
@@ -745,14 +790,16 @@ fun SettingsScreen(
                                 modifier = Modifier.fillMaxWidth()
                             )
 
-                            OutlinedTextField(
-                                value = passwordInput,
-                                onValueChange = { passwordInput = it; emailErrorMessage = null },
-                                label = { Text("Password") },
-                                visualTransformation = PasswordVisualTransformation(),
-                                singleLine = true,
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            if (authMode != 2) {
+                                OutlinedTextField(
+                                    value = passwordInput,
+                                    onValueChange = { passwordInput = it; emailErrorMessage = null },
+                                    label = { Text("Password") },
+                                    visualTransformation = PasswordVisualTransformation(),
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
 
                             if (emailErrorMessage != null) {
                                 Text(
@@ -762,14 +809,32 @@ fun SettingsScreen(
                                 )
                             }
 
-                            TextButton(
-                                onClick = { isRegisterMode = !isRegisterMode; emailErrorMessage = null },
-                                modifier = Modifier.align(Alignment.End)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(
-                                    text = if (isRegisterMode) "Already have an account? Sign In" else "Need an account? Create one",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
+                                if (authMode == 0) {
+                                    TextButton(
+                                        onClick = { authMode = 2; emailErrorMessage = null }
+                                    ) {
+                                        Text("Forgot Password?", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                } else {
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+
+                                TextButton(
+                                    onClick = {
+                                        authMode = if (authMode == 1) 0 else 1
+                                        emailErrorMessage = null
+                                    }
+                                ) {
+                                    Text(
+                                        text = if (authMode == 1) "Already have an account? Sign In" else "Create Account",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                }
                             }
                         }
                     },
@@ -778,38 +843,49 @@ fun SettingsScreen(
                             onClick = {
                                 val email = emailInput.trim()
                                 val password = passwordInput.trim()
-                                if (email.isBlank() || password.isBlank()) {
-                                    emailErrorMessage = "Email and password cannot be empty."
+                                if (email.isBlank()) {
+                                    emailErrorMessage = "Email cannot be empty."
                                     return@Button
                                 }
-                                if (password.length < 6) {
+                                if (authMode != 2 && password.length < 6) {
                                     emailErrorMessage = "Password must be at least 6 characters."
                                     return@Button
                                 }
                                 emailLoading = true
-                                val auth = FirebaseAuth.getInstance()
-                                if (isRegisterMode) {
-                                    auth.createUserWithEmailAndPassword(email, password)
-                                        .addOnSuccessListener {
+                                when (authMode) {
+                                    1 -> {
+                                        onRegisterEmail(email, password) { success, err ->
                                             emailLoading = false
-                                            showEmailAuthDialog = false
-                                            android.widget.Toast.makeText(context, "Account created: $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            if (success) {
+                                                showEmailAuthDialog = false
+                                                android.widget.Toast.makeText(context, "Account created & local data linked: $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                emailErrorMessage = err ?: "Account creation failed."
+                                            }
                                         }
-                                        .addOnFailureListener { e ->
+                                    }
+                                    2 -> {
+                                        onSendPasswordReset(email) { success, err ->
                                             emailLoading = false
-                                            emailErrorMessage = e.localizedMessage ?: "Registration failed"
+                                            if (success) {
+                                                showEmailAuthDialog = false
+                                                android.widget.Toast.makeText(context, "Password reset email sent to $email", android.widget.Toast.LENGTH_LONG).show()
+                                            } else {
+                                                emailErrorMessage = err ?: "Failed to send password reset email."
+                                            }
                                         }
-                                } else {
-                                    auth.signInWithEmailAndPassword(email, password)
-                                        .addOnSuccessListener {
+                                    }
+                                    else -> {
+                                        onSignInEmail(email, password) { success, err ->
                                             emailLoading = false
-                                            showEmailAuthDialog = false
-                                            android.widget.Toast.makeText(context, "Signed in as $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            if (success) {
+                                                showEmailAuthDialog = false
+                                                android.widget.Toast.makeText(context, "Signed in as $email", android.widget.Toast.LENGTH_SHORT).show()
+                                            } else {
+                                                emailErrorMessage = err ?: "Sign in failed."
+                                            }
                                         }
-                                        .addOnFailureListener { e ->
-                                            emailLoading = false
-                                            emailErrorMessage = e.localizedMessage ?: "Sign in failed"
-                                        }
+                                    }
                                 }
                             },
                             enabled = !emailLoading
@@ -822,7 +898,13 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                             }
-                            Text(if (isRegisterMode) "Create Account" else "Sign In")
+                            Text(
+                                when (authMode) {
+                                    1 -> "Create & Link"
+                                    2 -> "Send Reset Link"
+                                    else -> "Sign In"
+                                }
+                            )
                         }
                     },
                     dismissButton = {

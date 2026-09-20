@@ -6,6 +6,15 @@
 ---
 
 ## [Implemented]
+- **Multi-User Room Architecture & Offline-to-Cloud Account Linking**:
+  - **Room Database Schema v13 (`AppDatabase.kt`)**: Added `MIGRATION_12_13` supporting `userId` on `SpeakerProfile` and `LocationProfile` tables, enabling clean per-user partitioning and offline-to-registered data transitions.
+  - **User-Aware Repositories & DAOs**: Extended `SpeakerDao`, `SpeakerRepository`, `LocationDao`, and `LocationRepository` with user-filtered queries and `updateUserIdForLocalRecords` to reassign guest data upon sign-in or registration.
+  - **Seamless Guest-to-Email Account Conversion**: Implemented Firebase anonymous credential linking (`linkWithCredential`) in `MainViewModel.registerWithEmail`, allowing users starting in Guest Mode to create an account and preserve all existing local records, venue presets, and speaker profiles without data loss.
+  - **Full-Spectrum Cloud Synchronization (`syncTranscriptionsWithCloud`)**: Cloud sync now coordinates bidirectional synchronization for `Transcription`, `SpeakerProfile`, and `LocationProfile` collections in Firestore.
+  - **Decoupled Local Deletion**: Local deletion of transcriptions in Room database strictly preserves Firestore records, preventing accidental cloud data loss.
+  - **Audio Cloud Storage Toggle**: Added configurable audio cloud backup preference persisted in `SharedPreferences` and integrated into `UiState` and `SettingsScreen.kt`.
+  - **Firestore Security Rules (`firestore.rules`)**: Added production security rules enforcing strict user data isolation (`/users/{userId}/...` matching `request.auth.uid == userId`) across transcriptions, speakers, locations, and audio metadata.
+  - **ViewModel Auth Orchestration in `SettingsScreen.kt`**: Completely refactored `SettingsScreen.kt` to route all auth actions (sign in, register/link, sign out, password reset, email verification, audio cloud backup toggle) through `MainViewModel`.
 - **Google API Key Remediation & Secret Leak Prevention**:
   - **Neutralized Exposed Key**: Removed the hardcoded Google API key from `firebase-applet-config.json` and replaced it with a safe placeholder (`AIzaSy_REDACTED_USE_AI_STUDIO_SECRETS_PANEL`).
   - **Git Credential Safeguards**: Updated `.gitignore` with comprehensive rules ignoring `.env`, `firebase-applet-config.json`, `google-services.json`, `secrets.properties`, `local.properties`, and keystores (`*.jks`, `*.keystore`, `*.p12`).
@@ -191,9 +200,13 @@
 - `app/src/main/java/com/example/db/SpeakerProfile.kt`: Room Entity for known speakers, color hex badges, recording statistics, and Golden Sample audio segment references.
 - `app/src/main/java/com/example/db/SpeakerDao.kt`: Data access object for speaker profile queries, upserts, deletion, and golden sample management.
 - `app/src/main/java/com/example/db/SpeakerRepository.kt`: Repository layer mediating between Room SpeakerDao and MainViewModel.
+- `app/src/main/java/com/example/db/LocationProfile.kt`: Room Entity for venue presets, addresses, tiers, and visit statistics.
+- `app/src/main/java/com/example/db/LocationDao.kt`: Data access object for location profile queries, upserts, and user-filtered retrieval.
+- `app/src/main/java/com/example/db/LocationRepository.kt`: Repository layer mediating between LocationDao and MainViewModel.
 - `app/src/main/java/com/example/db/AppDatabase.kt`: Room database initialization, schema versioning, and migration definitions.
 - `app/src/main/java/com/example/db/TranscriptionDao.kt`: Data access object for Room database queries and mutations.
 - `app/src/main/java/com/example/db/TranscriptionRepository.kt`: Repository layer mediating between Room DAO and the ViewModel.
+- `firestore.rules`: Security rules enforcing per-user authorization across Firestore collections.
 - `app/src/main/java/com/example/ui/theme/Color.kt`: M3 color definitions.
 - `app/src/main/java/com/example/ui/theme/Theme.kt`: Material 3 theme wrapper and dynamic color handling.
 - `app/src/main/java/com/example/ui/theme/Type.kt`: Typography definitions.

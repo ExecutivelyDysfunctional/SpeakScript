@@ -13,6 +13,8 @@ import java.util.UUID
 data class SpeakerProfile(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
+    @ColumnInfo(name = "user_id", defaultValue = "")
+    val userId: String = "",
     @ColumnInfo(name = "name")
     val name: String,
     @ColumnInfo(name = "relationship_or_role")

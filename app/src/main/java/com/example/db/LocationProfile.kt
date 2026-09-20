@@ -12,6 +12,8 @@ import java.util.UUID
 data class LocationProfile(
     @PrimaryKey
     val id: String = UUID.randomUUID().toString(),
+    @ColumnInfo(name = "user_id", defaultValue = "")
+    val userId: String = "",
     @ColumnInfo(name = "name")
     val name: String, // e.g., "Office", "Client HQ", "Home Studio", "Favorite Cafe"
     @ColumnInfo(name = "address")

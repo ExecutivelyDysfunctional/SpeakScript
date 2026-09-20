@@ -26,7 +26,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import android.media.MediaPlayer
 import androidx.compose.material.icons.filled.PlayArrow
@@ -604,6 +603,12 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
             onSaveGroqApiKey = { viewModel.saveGroqApiKey(context, it) },
             onAiProviderChange = { viewModel.setAiProvider(context, it) },
             onSyncCloud = { viewModel.syncTranscriptionsWithCloud() },
+            onSignInEmail = { email, pass, onResult -> viewModel.signInWithEmail(email, pass, onResult) },
+            onRegisterEmail = { email, pass, onResult -> viewModel.registerWithEmail(email, pass, onResult) },
+            onSignOut = { viewModel.signOut() },
+            onSendPasswordReset = { email, onResult -> viewModel.sendPasswordResetEmail(email, onResult) },
+            onSendVerificationEmail = { onResult -> viewModel.sendEmailVerification(onResult) },
+            onToggleAudioCloudSync = { enabled -> viewModel.toggleAudioCloudSync(context, enabled) },
             onExportAllJson = {
                 exportAllLauncher.launch("transcriptions_backup_${System.currentTimeMillis()}.json")
             },
