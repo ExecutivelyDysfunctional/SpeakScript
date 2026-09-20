@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ContextWrapper
+import android.util.Log
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -51,6 +52,8 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.launch
 import com.example.R
+import com.example.util.GoogleSignInErrorClassifier
+import com.example.util.GoogleSignInResult
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 
@@ -650,12 +653,12 @@ fun SettingsScreen(
                 Button(
                     onClick = {
                         coroutineScope.launch {
+                            if (isSigningIn) return@launch
                             isSigningIn = true
                             try {
                                 val activity = context.findActivity() ?: (context as? Activity)
-                                if (activity == null) {
+                                if (activity == null || activity.isFinishing || activity.isDestroyed) {
                                     android.widget.Toast.makeText(context, "Cannot open sign-in: Activity context unavailable", android.widget.Toast.LENGTH_SHORT).show()
-                                    isSigningIn = false
                                     return@launch
                                 }
 
@@ -673,43 +676,64 @@ fun SettingsScreen(
                                     val result = credentialManager.getCredential(activity, request)
                                     handleCredentialResult(result.credential)
                                 } catch (initialEx: Exception) {
-                                    if (initialEx is GetCredentialCancellationException || 
-                                        initialEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
-                                        (initialEx.message?.contains("cancel", ignoreCase = true) == true)) {
-                                        android.widget.Toast.makeText(context, "Google Sign-In canceled by user", android.widget.Toast.LENGTH_SHORT).show()
-                                        return@launch
-                                    }
+                                    val classified = GoogleSignInErrorClassifier.classifyError(initialEx)
+                                    Log.e("GoogleSignIn", "Primary Google Sign-In attempt failed (${classified.javaClass.simpleName})", initialEx)
 
-                                    // Attempt 2: Fallback to GetGoogleIdOption
-                                    try {
-                                        val googleIdOption = GetGoogleIdOption.Builder()
-                                            .setFilterByAuthorizedAccounts(false)
-                                            .setServerClientId(serverClientId)
-                                            .setAutoSelectEnabled(false)
-                                            .build()
-
-                                        val fallbackRequest = GetCredentialRequest.Builder()
-                                            .addCredentialOption(googleIdOption)
-                                            .build()
-
-                                        val fallbackResult = credentialManager.getCredential(activity, fallbackRequest)
-                                        handleCredentialResult(fallbackResult.credential)
-                                    } catch (fallbackEx: Exception) {
-                                        if (fallbackEx is GetCredentialCancellationException || 
-                                            fallbackEx.javaClass.simpleName.contains("Cancellation", ignoreCase = true) ||
-                                            (fallbackEx.message?.contains("cancel", ignoreCase = true) == true)) {
+                                    when (classified) {
+                                        is GoogleSignInResult.UserCancellation -> {
                                             android.widget.Toast.makeText(context, "Google Sign-In canceled by user", android.widget.Toast.LENGTH_SHORT).show()
-                                            return@launch
+                                            // Do NOT attempt fallback on explicit user cancellation
                                         }
-                                        fallbackEx.printStackTrace()
-                                        noCredentialsErrorMessage = fallbackEx.localizedMessage ?: fallbackEx.message ?: "No credentials available"
-                                        showNoCredentialsDialog = true
+                                        else -> {
+                                            // Attempt 2: Fallback to GetGoogleIdOption only if not explicitly canceled
+                                            try {
+                                                val googleIdOption = GetGoogleIdOption.Builder()
+                                                    .setFilterByAuthorizedAccounts(false)
+                                                    .setServerClientId(serverClientId)
+                                                    .setAutoSelectEnabled(false)
+                                                    .build()
+
+                                                val fallbackRequest = GetCredentialRequest.Builder()
+                                                    .addCredentialOption(googleIdOption)
+                                                    .build()
+
+                                                val fallbackResult = credentialManager.getCredential(activity, fallbackRequest)
+                                                handleCredentialResult(fallbackResult.credential)
+                                            } catch (fallbackEx: Exception) {
+                                                val fallbackClassified = GoogleSignInErrorClassifier.classifyError(fallbackEx)
+                                                Log.e("GoogleSignIn", "Fallback Google Sign-In attempt failed (${fallbackClassified.javaClass.simpleName})", fallbackEx)
+
+                                                when (fallbackClassified) {
+                                                    is GoogleSignInResult.UserCancellation -> {
+                                                        android.widget.Toast.makeText(context, "Google Sign-In canceled by user", android.widget.Toast.LENGTH_SHORT).show()
+                                                    }
+                                                    is GoogleSignInResult.NoCredentials -> {
+                                                        noCredentialsErrorMessage = "No Google account or saved credentials found on this device. Please add a Google account in Android Settings and try again."
+                                                        showNoCredentialsDialog = true
+                                                    }
+                                                    is GoogleSignInResult.ConfigurationError -> {
+                                                        noCredentialsErrorMessage = fallbackClassified.description
+                                                        showNoCredentialsDialog = true
+                                                    }
+                                                    is GoogleSignInResult.Failure -> {
+                                                        noCredentialsErrorMessage = "Sign-In Failed: ${fallbackClassified.message}"
+                                                        showNoCredentialsDialog = true
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             } catch (e: Exception) {
-                                e.printStackTrace()
-                                if (e !is GetCredentialCancellationException && !e.javaClass.simpleName.contains("Cancellation", ignoreCase = true)) {
-                                    noCredentialsErrorMessage = e.localizedMessage ?: e.message ?: "Authentication error"
+                                Log.e("GoogleSignIn", "Unexpected error in sign-in flow", e)
+                                val classified = GoogleSignInErrorClassifier.classifyError(e)
+                                if (classified !is GoogleSignInResult.UserCancellation) {
+                                    noCredentialsErrorMessage = when (classified) {
+                                        is GoogleSignInResult.NoCredentials -> "No Google account found on device."
+                                        is GoogleSignInResult.ConfigurationError -> classified.description
+                                        is GoogleSignInResult.Failure -> classified.message
+                                        else -> "Sign-In Error: ${e.localizedMessage ?: e.message}"
+                                    }
                                     showNoCredentialsDialog = true
                                 }
                             } finally {
@@ -745,16 +769,37 @@ fun SettingsScreen(
                     contract = androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == android.app.Activity.RESULT_CANCELED) {
+                        val intentData = result.data
+                        if (intentData != null) {
+                            val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(intentData)
+                            try {
+                                val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
+                                if (account != null) {
+                                    onDriveConnected(account.email)
+                                    android.widget.Toast.makeText(context, "Drive connected: ${account.email}", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@rememberLauncherForActivityResult
+                                }
+                            } catch (e: com.google.android.gms.common.api.ApiException) {
+                                Log.e("GoogleSignIn", "Drive launcher returned RESULT_CANCELED with ApiException code ${e.statusCode}", e)
+                                if (e.statusCode == 10) {
+                                    showDriveError10Dialog = true
+                                    onDriveConnected(null)
+                                    return@rememberLauncherForActivityResult
+                                }
+                            }
+                        }
                         onDriveConnected(null)
-                        android.widget.Toast.makeText(context, "Google Drive connection canceled", android.widget.Toast.LENGTH_SHORT).show()
+                        android.widget.Toast.makeText(context, "Google Drive connection canceled by user", android.widget.Toast.LENGTH_SHORT).show()
                         return@rememberLauncherForActivityResult
                     }
+
                     val intentData = result.data
                     if (intentData == null) {
                         onDriveConnected(null)
                         android.widget.Toast.makeText(context, "Google Drive connection failed: No response data received", android.widget.Toast.LENGTH_SHORT).show()
                         return@rememberLauncherForActivityResult
                     }
+
                     val task = com.google.android.gms.auth.api.signin.GoogleSignIn.getSignedInAccountFromIntent(intentData)
                     try {
                         val account = task.getResult(com.google.android.gms.common.api.ApiException::class.java)
@@ -767,15 +812,24 @@ fun SettingsScreen(
                         }
                     } catch (e: com.google.android.gms.common.api.ApiException) {
                         onDriveConnected(null)
-                        if (e.statusCode == 10) {
-                            showDriveError10Dialog = true
-                        } else if (e.statusCode == 12501 || e.statusCode == 12500) {
-                            android.widget.Toast.makeText(context, "Google Drive connection canceled by user (Code ${e.statusCode})", android.widget.Toast.LENGTH_SHORT).show()
-                        } else {
-                            android.widget.Toast.makeText(context, "Drive connection failed (Code ${e.statusCode}): ${e.message ?: "API Error"}", android.widget.Toast.LENGTH_LONG).show()
+                        Log.e("GoogleSignIn", "Google Drive connection failed with status code ${e.statusCode}", e)
+                        when (e.statusCode) {
+                            10 -> { // DEVELOPER_ERROR
+                                showDriveError10Dialog = true
+                            }
+                            12501, 12500 -> {
+                                android.widget.Toast.makeText(context, "Google Drive connection canceled by user", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            7 -> {
+                                android.widget.Toast.makeText(context, "Google Drive connection failed: Network error", android.widget.Toast.LENGTH_LONG).show()
+                            }
+                            else -> {
+                                android.widget.Toast.makeText(context, "Drive connection failed (Code ${e.statusCode}): ${e.message ?: "API Error"}", android.widget.Toast.LENGTH_LONG).show()
+                            }
                         }
                     } catch (e: Exception) {
                         onDriveConnected(null)
+                        Log.e("GoogleSignIn", "Google Drive connection exception", e)
                         android.widget.Toast.makeText(context, "Drive connection failed: ${e.localizedMessage ?: e.message}", android.widget.Toast.LENGTH_LONG).show()
                     }
                 }

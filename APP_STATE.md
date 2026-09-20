@@ -6,6 +6,15 @@
 ---
 
 ## [Implemented]
+- **Bluetooth Microphone Recording Reliability & Route Management**:
+  - **Android 12+ (API 31+) Communication Device Routing**: Integrated modern `AudioManager.setCommunicationDevice()` and `clearCommunicationDevice()` using `AudioDeviceInfo` (`TYPE_BLUETOOTH_SCO`, `TYPE_BLE_HEADSET`, `TYPE_BLUETOOTH_A2DP`, `TYPE_HEARING_AID`), ensuring reliable Bluetooth earbud / headset microphone capture on newer Android versions.
+  - **Legacy SCO Fallback & `MODE_IN_COMMUNICATION`**: Handled legacy `startBluetoothSco()` and `isBluetoothScoOn` routing for API < 31, with strict audio mode lifecycle management (`MODE_IN_COMMUNICATION` during recording, restored to `MODE_NORMAL` on stop).
+  - **Dynamic Sample Rate & Buffer Helper (`AudioConfigHelper.kt`)**: Created helper to probe supported sample rates (16kHz, 44.1kHz, etc.) and calculate valid minimum buffer sizes (`AudioRecord.getMinBufferSize`), preventing initialization failures on diverse device hardware.
+  - **Audio Source Fallbacks**: Implemented multi-tier source fallbacks (`VOICE_COMMUNICATION` -> `MIC` -> `DEFAULT`) in `RecordingService.kt` to guarantee `AudioRecord` state initialization across Bluetooth and phone mic hardware.
+  - **Synchronized Service Lifecycle & Thread Safety**: Secured `startRecording` and `stopRecording` in `RecordingService.kt` with thread locks, coroutine supervisor scopes, `RECORD_AUDIO` / `BLUETOOTH_CONNECT` permission validation, dynamic WAV conversion with actual recorded sample rate, and MediaStore public folder sync.
+- **Accurate Google Sign-In Error Classifier (`GoogleSignInErrorClassifier.kt`)**:
+  - **CredentialManager Exception Classification**: Implemented sealed class classifier (`GoogleSignInResult`) distinguishing true user cancellations (`GetCredentialCancellationException` or explicit cancellation messages) from account availability issues (`NoCredentialException`), OAuth / SHA-1 client misconfigurations (`DEVELOPER_ERROR` / status code 10), and generic failures.
+  - **Detailed Auth Diagnostics**: Updated `SettingsScreen.kt` to eliminate false "cancelled by user" dialogs on setup failures, replacing broad string matches with precise exception classification and surfacing explicit guidance for missing SHA-1 fingerprints or account configuration issues.
 - **Universal Audio Format Engine & MIME Detection Fix**:
   - **Gemini API 400 Fix & Model Identifiers**: Updated active Gemini transcription and analysis endpoints to valid production models (`gemini-2.5-flash` and `gemini-2.5-pro`), eliminating 400 Bad Request / 404 Not Found failures caused by deprecated or invalid model names.
   - **Biometric Reference Slice MIME Sanitization**: Verified and sanitized audio slice MIME types in `AudioSliceExtractor.kt` and `MainViewModel.kt` to ensure reference slices use valid Gemini inline MIME types (`audio/aac`, `audio/wav`, `audio/mp3`, `audio/ogg`, `audio/flac`, `audio/aiff`) instead of rejected video container types.
@@ -162,6 +171,10 @@
 - `app/src/main/java/com/example/ui/PlaybackScreen.kt`: Dedicated audio playback and review screen with interactive waveform touch scrubbing, timestamp jumping, speaker color badge styling, and Golden Sample assignment.
 - `app/src/main/java/com/example/ui/SpeakerManagementScreen.kt`: Known Speakers Directory, profile management, custom color picker, Golden Sample preview player, and modal speaker details dialog.
 - `app/src/main/java/com/example/ui/MainViewModel.kt`: Central state manager, Gemini streaming transcription logic, multimodal biometric prompt bundling, AI queries, speaker repository coordination, and data sync.
+- `app/src/main/java/com/example/service/RecordingService.kt`: Foreground service managing audio recording, Bluetooth SCO/CommunicationDevice audio routing, PCM to WAV conversion, and MediaStore export.
+- `app/src/main/java/com/example/util/AudioConfigHelper.kt`: Utility for calculating valid buffer sizes and probing supported sample rates for AudioRecord.
+- `app/src/main/java/com/example/util/GoogleSignInErrorClassifier.kt`: Classifier mapping CredentialManager exceptions to specific GoogleSignInResult states.
+- `app/src/test/java/com/example/AudioAndAuthFixesTest.kt`: Unit tests verifying AudioConfigHelper buffer/sample rate calculations and GoogleSignInErrorClassifier exception mapping.
 - `app/src/main/java/com/example/ui/SettingsScreen.kt`: Settings screen for AI provider keys (Gemini, OpenRouter, Groq), appearance theme mode, Google Drive, and Known Speakers navigation link.
 - `app/src/main/java/com/example/util/AudioSliceExtractor.kt`: Audio segment extraction utility using MediaExtractor/MediaMuxer for verified Golden Sample biometric slices.
 - `app/src/main/java/com/example/api/GeminiApiService.kt`: Retrofit client interfaces, data transfer models, and network clients for Gemini, OpenRouter, and Groq.

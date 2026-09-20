@@ -1,19 +1,21 @@
 package com.example.service
 
+import android.Manifest
 import android.app.*
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.*
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import com.example.util.AudioConfigHelper
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 
 class RecordingService : Service() {
     private val binder = LocalBinder()
@@ -22,12 +24,10 @@ class RecordingService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private var currentOutputFile: File? = null
-    private var isRecording = false
-
-    private val sampleRate = 44100
-    private val channelConfig = AudioFormat.CHANNEL_IN_MONO
-    private val audioFormat = AudioFormat.ENCODING_PCM_16BIT
-    private val bufferSize = AudioRecord.getMinBufferSize(sampleRate, channelConfig, audioFormat)
+    @Volatile private var isRecording = false
+    private var actualSampleRate = 16000
+    private var isBluetoothRouteActive = false
+    private val recordingLock = Any()
 
     inner class LocalBinder : Binder() {
         fun getService(): RecordingService = this@RecordingService
@@ -40,7 +40,7 @@ class RecordingService : Service() {
         when (action) {
             ACTION_START_RECORDING -> {
                 val useBluetooth = intent.getBooleanExtra(EXTRA_USE_BLUETOOTH, false)
-                startForegroundService(useBluetooth)
+                startForegroundNotification(useBluetooth)
                 startRecording(useBluetooth)
             }
             ACTION_STOP_RECORDING -> {
@@ -52,7 +52,7 @@ class RecordingService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startForegroundService(useBluetooth: Boolean) {
+    private fun startForegroundNotification(useBluetooth: Boolean) {
         val channelId = "recording_channel"
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -61,10 +61,10 @@ class RecordingService : Service() {
                 NotificationManager.IMPORTANCE_LOW
             )
             val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+            manager?.createNotificationChannel(channel)
         }
 
-        val micType = if (useBluetooth) "Bluetooth Earbud" else "Phone Microphone"
+        val micType = if (useBluetooth) "Bluetooth Earbud / Headset" else "Phone Microphone"
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Recording Audio")
             .setContentText("Capturing from $micType")
@@ -76,94 +76,249 @@ class RecordingService : Service() {
         startForeground(NOTIFICATION_ID, notification)
     }
 
-    private fun startRecording(useBluetooth: Boolean) {
-        if (isRecording) return
-        isRecording = true
-
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        if (useBluetooth) {
-            audioManager.startBluetoothSco()
-            audioManager.isBluetoothScoOn = true
+    private fun configureBluetoothAudioRoute(useBluetooth: Boolean): Boolean {
+        if (!useBluetooth) {
+            releaseBluetoothAudioRoute()
+            return false
         }
 
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return false
+
+        // Check BLUETOOTH_CONNECT permission on Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission not granted, falling back to phone mic")
+                releaseBluetoothAudioRoute()
+                return false
+            }
+        }
+
+        return try {
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val btDevice = selectBluetoothCommunicationDevice(audioManager)
+                if (btDevice != null) {
+                    val success = audioManager.setCommunicationDevice(btDevice)
+                    Log.i(TAG, "setCommunicationDevice (${btDevice.productName ?: btDevice.type}) result: $success")
+                    isBluetoothRouteActive = success
+                    success
+                } else {
+                    Log.w(TAG, "No Bluetooth communication device found in availableCommunicationDevices")
+                    isBluetoothRouteActive = false
+                    false
+                }
+            } else {
+                audioManager.startBluetoothSco()
+                audioManager.isBluetoothScoOn = true
+                isBluetoothRouteActive = true
+                waitForBluetoothSco(audioManager)
+                true
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to configure Bluetooth audio route", e)
+            releaseBluetoothAudioRoute()
+            false
+        }
+    }
+
+    private fun selectBluetoothCommunicationDevice(audioManager: AudioManager): AudioDeviceInfo? {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val devices = audioManager.availableCommunicationDevices
+            return devices.firstOrNull { device ->
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO ||
+                device.type == AudioDeviceInfo.TYPE_BLE_HEADSET ||
+                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP ||
+                device.type == AudioDeviceInfo.TYPE_HEARING_AID
+            }
+        }
+        return null
+    }
+
+    private fun waitForBluetoothSco(audioManager: AudioManager) {
+        val startTime = System.currentTimeMillis()
+        while (!audioManager.isBluetoothScoOn && (System.currentTimeMillis() - startTime) < 2000) {
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+    }
+
+    private fun releaseBluetoothAudioRoute() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
         try {
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                bufferSize
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                audioManager.clearCommunicationDevice()
+            } else {
+                audioManager.isBluetoothScoOn = false
+                audioManager.stopBluetoothSco()
+            }
+            audioManager.mode = AudioManager.MODE_NORMAL
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing Bluetooth audio route", e)
+        } finally {
+            isBluetoothRouteActive = false
+        }
+    }
+
+    private fun createAudioRecord(useBluetooth: Boolean): Pair<AudioRecord, Int>? {
+        val preferredSource = if (useBluetooth) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.MIC
+        val fallbackSources = if (useBluetooth) {
+            listOf(preferredSource, MediaRecorder.AudioSource.MIC, MediaRecorder.AudioSource.DEFAULT)
+        } else {
+            listOf(preferredSource, MediaRecorder.AudioSource.DEFAULT)
+        }
+
+        val channelConfig = AudioFormat.CHANNEL_IN_MONO
+        val audioFormat = AudioFormat.ENCODING_PCM_16BIT
+
+        for (source in fallbackSources) {
+            val rate = AudioConfigHelper.selectSupportedSampleRate(
+                audioSource = source,
+                channelConfig = channelConfig,
+                audioFormat = audioFormat
             )
+            if (rate > 0) {
+                val bufSize = AudioConfigHelper.calculateValidBufferSize(rate, channelConfig, audioFormat)
+                if (bufSize > 0) {
+                    try {
+                        val record = AudioRecord(source, rate, channelConfig, audioFormat, bufSize)
+                        if (record.state == AudioRecord.STATE_INITIALIZED) {
+                            Log.i(TAG, "AudioRecord initialized with source=$source, sampleRate=$rate, bufferSize=$bufSize")
+                            return Pair(record, rate)
+                        } else {
+                            record.release()
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "AudioRecord creation failed for source=$source, rate=$rate", e)
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun startRecording(useBluetooth: Boolean) {
+        synchronized(recordingLock) {
+            if (isRecording) {
+                Log.w(TAG, "startRecording called while already recording")
+                return
+            }
+
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                Log.e(TAG, "RECORD_AUDIO permission missing, aborting recording")
+                return
+            }
+
+            val btConfigured = configureBluetoothAudioRoute(useBluetooth)
+            val recordPair = createAudioRecord(useBluetooth = btConfigured)
+
+            if (recordPair == null) {
+                Log.e(TAG, "Could not initialize AudioRecord with any configuration")
+                releaseBluetoothAudioRoute()
+                return
+            }
+
+            val (record, rate) = recordPair
+            audioRecord = record
+            actualSampleRate = rate
+            isRecording = true
 
             val outputDir = File(filesDir, "recordings")
             if (!outputDir.exists()) outputDir.mkdirs()
             val fileName = "recording_${System.currentTimeMillis()}.pcm"
             currentOutputFile = File(outputDir, fileName)
 
-            audioRecord?.startRecording()
-
             recordingJob = serviceScope.launch {
-                val buffer = ByteArray(bufferSize)
-                FileOutputStream(currentOutputFile).use { fos ->
-                    while (isRecording && audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                        val read = audioRecord?.read(buffer, 0, buffer.size) ?: 0
-                        if (read > 0) {
-                            fos.write(buffer, 0, read)
+                val bufSize = AudioConfigHelper.calculateValidBufferSize(rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                val buffer = ByteArray(if (bufSize > 0) bufSize else 2048)
+                var totalBytesRead = 0L
+
+                try {
+                    record.startRecording()
+                    FileOutputStream(currentOutputFile).use { fos ->
+                        while (isRecording && record.recordingState == AudioRecord.RECORDSTATE_RECORDING && isActive) {
+                            val read = record.read(buffer, 0, buffer.size)
+                            if (read > 0) {
+                                fos.write(buffer, 0, read)
+                                totalBytesRead += read
+                            } else if (read < 0) {
+                                Log.e(TAG, "AudioRecord read error code: $read")
+                                break
+                            }
                         }
                     }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in audio recording loop", e)
+                } finally {
+                    Log.i(TAG, "Recording loop ended. Total bytes read: $totalBytesRead")
                 }
             }
-        } catch (e: Exception) {
-            Log.e("RecordingService", "Failed to start recording", e)
-            isRecording = false
         }
     }
 
     private fun stopRecording() {
-        isRecording = false
-        
-        audioRecord?.apply {
+        synchronized(recordingLock) {
+            if (!isRecording && audioRecord == null) {
+                return
+            }
+            isRecording = false
+
             try {
-                stop()
+                if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
+                    audioRecord?.stop()
+                }
             } catch (e: Exception) {
-                Log.e("RecordingService", "Error stopping audioRecord", e)
+                Log.e(TAG, "Error stopping AudioRecord", e)
             }
-            release()
-        }
-        audioRecord = null
 
-        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.stopBluetoothSco()
-        audioManager.isBluetoothScoOn = false
+            runBlocking {
+                try {
+                    recordingJob?.join()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error waiting for recording job", e)
+                }
+            }
+            recordingJob = null
 
-        runBlocking {
             try {
-                recordingJob?.join()
+                audioRecord?.release()
             } catch (e: Exception) {
-                Log.e("RecordingService", "Error waiting for recording coroutine", e)
+                Log.e(TAG, "Error releasing AudioRecord", e)
             }
-        }
+            audioRecord = null
 
-        // Finalize PCM to WAV
-        currentOutputFile?.let { pcmFile ->
-            val wavFile = File(pcmFile.absolutePath.replace(".pcm", ".wav"))
-            pcmToWav(pcmFile, wavFile)
-            
-            // Automatically save a copy to the phone's public Music/TranscribeAI folder so search finds it
-            saveWavToPublicMusicFolder(wavFile)
+            releaseBluetoothAudioRoute()
 
-            // Notify system or ViewModel about the new file with explicit package targeting
-            val intent = Intent(ACTION_RECORDING_FINISHED).apply {
-                putExtra(EXTRA_WAV_PATH, wavFile.absolutePath)
-                setPackage(packageName)
+            val pcmFile = currentOutputFile
+            if (pcmFile != null && pcmFile.exists() && pcmFile.length() > 0) {
+                val wavFile = File(pcmFile.absolutePath.replace(".pcm", ".wav"))
+                pcmToWav(pcmFile, wavFile, actualSampleRate)
+
+                if (wavFile.exists() && wavFile.length() > 44L) {
+                    saveWavToPublicMusicFolder(wavFile)
+                    val intent = Intent(ACTION_RECORDING_FINISHED).apply {
+                        putExtra(EXTRA_WAV_PATH, wavFile.absolutePath)
+                        setPackage(packageName)
+                    }
+                    sendBroadcast(intent)
+                } else {
+                    Log.w(TAG, "Final WAV file is empty or header-only")
+                }
+                pcmFile.delete()
+            } else {
+                Log.w(TAG, "PCM output file is missing or empty")
+                pcmFile?.delete()
             }
-            sendBroadcast(intent)
+            currentOutputFile = null
         }
     }
 
     private fun saveWavToPublicMusicFolder(wavFile: File) {
         try {
-            if (!wavFile.exists() || wavFile.length() == 0L) return
+            if (!wavFile.exists() || wavFile.length() <= 44L) return
             val fileName = wavFile.name
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val values = android.content.ContentValues().apply {
@@ -189,18 +344,18 @@ class RecordingService : Service() {
                 android.media.MediaScannerConnection.scanFile(this, arrayOf(destFile.absolutePath), arrayOf("audio/wav"), null)
             }
         } catch (e: Exception) {
-            Log.e("RecordingService", "Failed to save audio file to public Music directory", e)
+            Log.e(TAG, "Failed to save audio file to public Music directory", e)
         }
     }
 
-    private fun pcmToWav(pcmFile: File, wavFile: File) {
+    private fun pcmToWav(pcmFile: File, wavFile: File, sampleRateToUse: Int) {
         if (!pcmFile.exists()) return
         val pcmData = pcmFile.readBytes()
         val totalAudioLen = pcmData.size.toLong()
         val totalDataLen = totalAudioLen + 36
-        val longSampleRate = sampleRate.toLong()
+        val longSampleRate = sampleRateToUse.toLong()
         val channels = 1
-        val byteRate = 16 * sampleRate * channels / 8
+        val byteRate = 16 * sampleRateToUse * channels / 8
 
         FileOutputStream(wavFile).use { out ->
             writeWavHeader(out, totalAudioLen, totalDataLen, longSampleRate, channels, byteRate.toLong())
@@ -208,7 +363,14 @@ class RecordingService : Service() {
         }
     }
 
-    private fun writeWavHeader(out: FileOutputStream, totalAudioLen: Long, totalDataLen: Long, longSampleRate: Long, channels: Int, byteRate: Long) {
+    private fun writeWavHeader(
+        out: FileOutputStream,
+        totalAudioLen: Long,
+        totalDataLen: Long,
+        longSampleRate: Long,
+        channels: Int,
+        byteRate: Long
+    ) {
         val header = ByteArray(44)
         header[0] = 'R'.toByte()
         header[1] = 'I'.toByte()
@@ -259,12 +421,12 @@ class RecordingService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        isRecording = false
-        recordingJob?.cancel()
+        stopRecording()
         serviceScope.cancel()
     }
 
     companion object {
+        private const val TAG = "RecordingService"
         const val NOTIFICATION_ID = 1001
         const val ACTION_START_RECORDING = "com.example.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.example.action.STOP_RECORDING"
