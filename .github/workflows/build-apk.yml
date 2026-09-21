@@ -51,10 +51,10 @@ jobs:
           echo "Scanning workspace for exposed API keys and sensitive credentials..."
           FAILED=0
 
-          # Check for exposed Google API keys (AIzaSy...) outside of .env and .example
-          # We look for AIza followed by 35 alphanumeric, underscore, or hyphen characters
-          MATCHES=$(grep -rEn "AIzaSy[0-9A-Za-z_-]{33}" . \
-            --exclude-dir={.git,.gradle,build,outputs} \
+          # Detect actual Google API key patterns (39-char key starting with AIzaSy)
+          # Uses lookarounds to ensure exact 33-char base64 payload after AIzaSy
+          MATCHES=$(grep -rPn "(?<![0-9A-Za-z_-])AIzaSy[0-9A-Za-z_-]{33}(?![0-9A-Za-z_-])" . \
+            --exclude-dir={.git,.gradle,build,app/build,outputs,.build-outputs} \
             --exclude="*.log" \
             --exclude=".env" \
             --exclude="ExampleUnitTest.kt" \
@@ -62,17 +62,21 @@ jobs:
 
           if [ -n "$MATCHES" ]; then
             echo "::error::🚨 CRITICAL SECURITY ALERT: Real unmasked Google API Key pattern found in codebase!"
-            echo "$MATCHES"
+            # Mask the secret value before logging so credentials are never echoed into Actions logs
+            REDACTED_MATCHES=$(echo "$MATCHES" | sed -E 's/AIzaSy[0-9A-Za-z_-]{33}/AIzaSy[REDACTED_SECRET_KEY]/g')
+            echo "$REDACTED_MATCHES"
             FAILED=1
           else
             echo "✅ No exposed Google API keys found in tracked source files."
           fi
 
           # Ensure .gitignore protects .env and sensitive configs
-          if ! grep -q "\.env" .gitignore 2>/dev/null; then
-            echo "::error::🚨 Security Alert: .env is missing from .gitignore!"
-            FAILED=1
-          fi
+          for SENSITIVE_FILE in ".env" "firebase-applet-config.json" "google-services.json" "secrets.properties" "local.properties"; do
+            if ! grep -q "$SENSITIVE_FILE" .gitignore 2>/dev/null; then
+              echo "::error::🚨 Security Alert: $SENSITIVE_FILE is missing from .gitignore!"
+              FAILED=1
+            fi
+          done
 
           if [ $FAILED -ne 0 ]; then
             echo "Audit failed! Halting build to prevent publishing sensitive credentials."

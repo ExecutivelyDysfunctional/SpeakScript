@@ -16,7 +16,7 @@
   - **Firestore Security Rules (`firestore.rules`)**: Added production security rules enforcing strict user data isolation (`/users/{userId}/...` matching `request.auth.uid == userId`) across transcriptions, speakers, locations, and audio metadata.
   - **ViewModel Auth Orchestration in `SettingsScreen.kt`**: Completely refactored `SettingsScreen.kt` to route all auth actions (sign in, register/link, sign out, password reset, email verification, audio cloud backup toggle) through `MainViewModel`.
 - **Google API Key Remediation & Secret Leak Prevention**:
-  - **Neutralized Exposed Key**: Removed the hardcoded Google API key from `firebase-applet-config.json` and replaced it with a safe placeholder (`AIzaSy_REDACTED_USE_AI_STUDIO_SECRETS_PANEL`).
+  - **Neutralized Exposed Key**: Removed the hardcoded Google API key from `firebase-applet-config.json` and replaced it with a safe placeholder (`REDACTED_GOOGLE_API_KEY_USE_AI_STUDIO_SECRETS_PANEL`).
   - **Git Credential Safeguards**: Updated `.gitignore` with comprehensive rules ignoring `.env`, `firebase-applet-config.json`, `google-services.json`, `secrets.properties`, `local.properties`, and keystores (`*.jks`, `*.keystore`, `*.p12`).
   - **Automated CI Secret Audit**: Added an automated pre-build secret scanning step (`Secret Leak Prevention & Security Audit`) in `.github/workflows/build-apk.yml` that halts builds if unmasked Google API keys (`AIzaSy...`) or missing `.gitignore` rules are detected.
   - **Security Unit Testing Suite (`ApiKeySecurityTest.kt`)**: Added automated JUnit tests verifying that config files contain no exposed API keys, sensitive files are gitignored, `.env.example` contains only placeholders, and regex key masking successfully redacts various API key formats.

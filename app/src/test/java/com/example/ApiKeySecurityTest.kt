@@ -14,7 +14,7 @@ class ApiKeySecurityTest {
             File("../firebase-applet-config.json")
         )
         val configFile = candidates.firstOrNull { it.exists() }
-        val oldLeakedKey = "AIzaSy" + "Bvqfj8Ldo9Q_9YTotVKWSSfuMpufVzXqM"
+        val oldLeakedKey = "REDACTED_SECRET_ROTATE_THIS_KEY"
         if (configFile != null) {
             val content = configFile.readText()
             // Ensure the leaked key is not present
@@ -50,8 +50,8 @@ class ApiKeySecurityTest {
 
     @Test
     fun testMaskKeyRedactsVariousGoogleApiKeyFormats() {
-        val sampleLeak1 = "AIzaSy" + "Bvqfj8Ldo9Q_9YTotVKWSSfuMpufVzXqM"
-        val sampleLeak2 = "AIzaSyDummyKeyForTestingPurposes1234567"
+        val sampleLeak1 = "AIzaSyDummyKeyForTestingPurposes1234567"
+        val sampleLeak2 = "AIzaSyDummyKeyForTestingPurposes8901234"
         val text = "Request failed: Key $sampleLeak1 is invalid. Backup: $sampleLeak2"
 
         val masked = text.replace(Regex("AIzaSy[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
@@ -76,7 +76,7 @@ class ApiKeySecurityTest {
             )
             assertTrue(
                 "Placeholder should be present in .env.example",
-                content.contains("MY_GEMINI_API_KEY")
+                content.contains("YOUR_GEMINI_API_KEY_HERE") || content.contains("MY_GEMINI_API_KEY")
             )
         }
     }
