@@ -24,3 +24,6 @@ firebase-applet-config.json
 *.keystore
 *.p12
 debug.keystore
+node-compile-cache/
+hsperfdata_root/
+
