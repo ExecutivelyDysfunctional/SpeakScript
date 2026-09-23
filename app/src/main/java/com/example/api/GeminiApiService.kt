@@ -1,11 +1,17 @@
 package com.example.api
 
+import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody
 import okhttp3.ResponseBody
+import org.json.JSONObject
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
@@ -20,8 +26,8 @@ import java.util.concurrent.TimeUnit
 import retrofit2.http.Path
 
 object AiConstants {
-    const val GEMINI_DEFAULT_MODEL = "gemini-3.6-flash"
-    const val GEMINI_PRO_MODEL = "gemini-3.6-flash"
+    const val GEMINI_DEFAULT_MODEL = "gemini-3.5-flash"
+    const val GEMINI_PRO_MODEL = "gemini-3.5-flash"
     const val OPENROUTER_DEFAULT_MODEL = "google/gemini-2.5-flash:free"
     const val GROQ_AUDIO_MODEL = "whisper-large-v3"
     const val GROQ_TEXT_MODEL = "llama-3.3-70b-versatile"
@@ -30,48 +36,50 @@ object AiConstants {
 
 @JsonClass(generateAdapter = true)
 data class GenerateContentRequest(
-    val contents: List<Content>,
-    val generationConfig: GenerationConfig? = null,
-    val systemInstruction: Content? = null
+    @Json(name = "contents") val contents: List<Content>,
+    @Json(name = "generation_config") val generationConfig: GenerationConfig? = null,
+    @Json(name = "system_instruction") val systemInstruction: Content? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class Content(
-    val parts: List<Part>
+    @Json(name = "parts") val parts: List<Part>,
+    @Json(name = "role") val role: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class Part(
-    val text: String? = null,
-    val inlineData: InlineData? = null
+    @Json(name = "text") val text: String? = null,
+    @Json(name = "inline_data") val inlineData: InlineData? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class InlineData(
-    val mimeType: String,
-    val data: String
+    @Json(name = "mime_type") val mimeType: String,
+    @Json(name = "data") val data: String
 )
 
 @JsonClass(generateAdapter = true)
 data class GenerationConfig(
-    val temperature: Float? = null,
-    val responseMimeType: String? = null,
-    val thinkingConfig: ThinkingConfig? = null
+    @Json(name = "temperature") val temperature: Float? = null,
+    @Json(name = "response_mime_type") val responseMimeType: String? = null,
+    @Json(name = "thinking_config") val thinkingConfig: ThinkingConfig? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class ThinkingConfig(
-    val thinkingLevel: String
+    @Json(name = "thinking_level") val thinkingLevel: String? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class GenerateContentResponse(
-    val candidates: List<Candidate>? = null
+    @Json(name = "candidates") val candidates: List<Candidate>? = null
 )
 
 @JsonClass(generateAdapter = true)
 data class Candidate(
-    val content: Content? = null
+    @Json(name = "content") val content: Content? = null,
+    @Json(name = "finishReason") val finishReason: String? = null
 )
 
 @JsonClass(generateAdapter = true)
@@ -139,11 +147,12 @@ interface GeminiApiService {
         @Body request: GenerateContentRequest
     ): GenerateContentResponse
 
-    @POST("v1beta/models/{model}:streamGenerateContent?alt=sse")
+    @POST("v1beta/models/{model}:streamGenerateContent")
     @Streaming
     suspend fun generateContentStream(
         @Path("model") model: String,
         @Query("key") apiKey: String,
+        @Query("alt") alt: String = "sse",
         @Body request: GenerateContentRequest
     ): ResponseBody
 }
@@ -286,6 +295,101 @@ object GroqAudioClient {
             .addConverterFactory(MoshiConverterFactory.create(moshi))
             .build()
             .create(GroqAudioApiService::class.java)
+    }
+}
+
+object GeminiStreamParser {
+    suspend fun parseSseStream(
+        responseBody: ResponseBody,
+        apiKeyToMask: String? = null,
+        onChunkReceived: (String) -> Unit
+    ): String = withContext(Dispatchers.IO) {
+        val accumulated = StringBuilder()
+        var hasReceivedChunk = false
+
+        responseBody.byteStream().bufferedReader().use { reader ->
+            var line: String?
+            while (reader.readLine().also { line = it } != null) {
+                currentCoroutineContext().ensureActive()
+                val rawLine = line?.trim() ?: continue
+                if (rawLine.isEmpty() || rawLine.startsWith(":")) {
+                    continue // Blank SSE line or comment
+                }
+
+                if (rawLine.startsWith("data:")) {
+                    val jsonPayload = rawLine.substring(5).trim()
+                    if (jsonPayload.isEmpty()) continue
+                    if (jsonPayload == "[DONE]") break
+
+                    val textChunk = parseSseJsonPayload(jsonPayload, apiKeyToMask)
+                    if (!textChunk.isNullOrEmpty()) {
+                        accumulated.append(textChunk)
+                        hasReceivedChunk = true
+                        onChunkReceived(accumulated.toString())
+                    }
+                }
+            }
+        }
+
+        if (!hasReceivedChunk && accumulated.isEmpty()) {
+            throw IllegalStateException("Gemini API returned an empty response stream.")
+        }
+
+        accumulated.toString()
+    }
+
+    fun parseSseJsonPayload(jsonPayload: String, apiKeyToMask: String? = null): String? {
+        if (jsonPayload.isBlank() || jsonPayload == "[DONE]") return null
+
+        val json = try {
+            JSONObject(jsonPayload)
+        } catch (e: Exception) {
+            return null // Skip malformed SSE chunk
+        }
+
+        if (json.has("error")) {
+            val errorObj = json.optJSONObject("error")
+            val rawMsg = errorObj?.optString("message") ?: json.optString("error")
+            val status = errorObj?.optString("status") ?: ""
+            val maskedMsg = maskApiKey(rawMsg, apiKeyToMask)
+            val statusPart = if (status.isNotBlank()) " ($status)" else ""
+            throw IllegalStateException("Gemini API Error$statusPart: $maskedMsg")
+        }
+
+        val candidates = json.optJSONArray("candidates") ?: return null
+        if (candidates.length() == 0) return null
+
+        val candidate = candidates.optJSONObject(0) ?: return null
+
+        val finishReason = candidate.optString("finishReason", candidate.optString("finish_reason"))
+        if (finishReason == "SAFETY" || finishReason == "RECITATION" || finishReason == "BLOCKLIST") {
+            throw IllegalStateException("Gemini stream stopped due to finish reason: $finishReason")
+        }
+
+        val content = candidate.optJSONObject("content") ?: return null
+        val parts = content.optJSONArray("parts") ?: return null
+
+        val chunkText = StringBuilder()
+        for (i in 0 until parts.length()) {
+            val partObj = parts.optJSONObject(i) ?: continue
+            val text = partObj.optString("text", "")
+            if (text.isNotEmpty()) {
+                chunkText.append(text)
+            }
+        }
+
+        return if (chunkText.isNotEmpty()) chunkText.toString() else null
+    }
+
+    fun maskApiKey(text: String, apiKey: String? = null): String {
+        var result = text
+        if (!apiKey.isNullOrBlank() && apiKey.length > 5) {
+            result = result.replace(apiKey, "***MASKED_KEY***")
+        }
+        result = result.replace(Regex("sk-or-v1-[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
+        result = result.replace(Regex("gsk_[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
+        result = result.replace(Regex("AIzaSy[a-zA-Z0-9_-]+"), "***MASKED_KEY***")
+        return result
     }
 }
 

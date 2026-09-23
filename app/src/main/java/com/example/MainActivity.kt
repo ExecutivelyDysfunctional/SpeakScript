@@ -510,22 +510,50 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
         }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         permissionLauncher.launch(permissions.toTypedArray())
     }
 
     val receiver = remember {
         object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == RecordingService.ACTION_RECORDING_FINISHED) {
-                    val path = intent.getStringExtra(RecordingService.EXTRA_WAV_PATH)
-                    path?.let { viewModel.processRecordedFile(context, it) }
+                when (intent.action) {
+                    RecordingService.ACTION_RECORDING_STARTED -> {
+                        viewModel.onRecordingStarted()
+                    }
+                    RecordingService.ACTION_RECORDING_PAUSED -> {
+                        viewModel.onRecordingPaused()
+                    }
+                    RecordingService.ACTION_RECORDING_RESUMED -> {
+                        viewModel.onRecordingResumed()
+                    }
+                    RecordingService.ACTION_RECORDING_FAILED -> {
+                        val msg = intent.getStringExtra(RecordingService.EXTRA_ERROR_MESSAGE) ?: "Failed to start live recording."
+                        viewModel.onRecordingFailed(msg)
+                    }
+                    RecordingService.ACTION_RECORDING_STOPPED -> {
+                        viewModel.onRecordingStopped()
+                    }
+                    RecordingService.ACTION_RECORDING_FINISHED -> {
+                        val path = intent.getStringExtra(RecordingService.EXTRA_WAV_PATH)
+                        path?.let { viewModel.processRecordedFile(context, it) }
+                    }
                 }
             }
         }
     }
 
     DisposableEffect(Unit) {
-        val filter = IntentFilter(RecordingService.ACTION_RECORDING_FINISHED)
+        val filter = IntentFilter().apply {
+            addAction(RecordingService.ACTION_RECORDING_STARTED)
+            addAction(RecordingService.ACTION_RECORDING_PAUSED)
+            addAction(RecordingService.ACTION_RECORDING_RESUMED)
+            addAction(RecordingService.ACTION_RECORDING_FAILED)
+            addAction(RecordingService.ACTION_RECORDING_STOPPED)
+            addAction(RecordingService.ACTION_RECORDING_FINISHED)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             context.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -983,21 +1011,41 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                         ) {
                             Surface(
                                 shape = CircleShape,
-                                color = if (uiState.isRecording) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                                color = when {
+                                    uiState.isRecordingPaused -> MaterialTheme.colorScheme.tertiaryContainer
+                                    uiState.isRecording -> MaterialTheme.colorScheme.errorContainer
+                                    else -> MaterialTheme.colorScheme.primaryContainer
+                                },
                                 modifier = Modifier.size(64.dp)
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Icon(
-                                        imageVector = if (uiState.isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                                        contentDescription = if (uiState.isRecording) "Stop Recording" else "Start Recording",
-                                        tint = if (uiState.isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
+                                        imageVector = when {
+                                            uiState.isRecordingPaused -> Icons.Default.Pause
+                                            uiState.isRecording -> Icons.Default.Mic
+                                            else -> Icons.Default.Mic
+                                        },
+                                        contentDescription = when {
+                                            uiState.isRecordingPaused -> "Recording Paused"
+                                            uiState.isRecording -> "Recording Active"
+                                            else -> "Start Recording"
+                                        },
+                                        tint = when {
+                                            uiState.isRecordingPaused -> MaterialTheme.colorScheme.onTertiaryContainer
+                                            uiState.isRecording -> MaterialTheme.colorScheme.error
+                                            else -> MaterialTheme.colorScheme.onPrimaryContainer
+                                        },
                                         modifier = Modifier.size(32.dp)
                                     )
                                 }
                             }
                             
                             Text(
-                                text = if (uiState.isRecording) "Recording in Progress..." else "Capture Live Audio",
+                                text = when {
+                                    uiState.isRecordingPaused -> "Recording Paused"
+                                    uiState.isRecording -> "Recording in Progress..."
+                                    else -> "Capture Live Audio"
+                                },
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold
                             )
@@ -1030,20 +1078,65 @@ fun AppScreen(viewModel: MainViewModel = viewModel()) {
                                 Text("Prefer Bluetooth Earbud Mic", style = MaterialTheme.typography.bodySmall)
                             }
 
-                            Button(
-                                onClick = {
-                                    if (uiState.isRecording) {
-                                        viewModel.stopRecording(context)
-                                    } else {
-                                        viewModel.startRecording(context)
+                            if (uiState.isRecording) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            if (uiState.isRecordingPaused) {
+                                                viewModel.resumeRecording(context)
+                                            } else {
+                                                viewModel.pauseRecording(context)
+                                            }
+                                        },
+                                        modifier = Modifier.weight(1f),
+                                        contentPadding = PaddingValues(vertical = 12.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = if (uiState.isRecordingPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+                                            contentDescription = if (uiState.isRecordingPaused) "Resume" else "Pause",
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(if (uiState.isRecordingPaused) "Resume" else "Pause")
                                     }
-                                },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (uiState.isRecording) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                                )
-                            ) {
-                                Text(if (uiState.isRecording) "Stop & Finalize" else "Start Recording")
+
+                                    Button(
+                                        onClick = { viewModel.stopRecording(context) },
+                                        modifier = Modifier.weight(1f),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.error
+                                        ),
+                                        contentPadding = PaddingValues(vertical = 12.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Stop,
+                                            contentDescription = "Stop",
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Stop & Finalize")
+                                    }
+                                }
+                            } else {
+                                Button(
+                                    onClick = { viewModel.startRecording(context) },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = MaterialTheme.colorScheme.primary
+                                    ),
+                                    contentPadding = PaddingValues(vertical = 14.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Mic,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Start Recording")
+                                }
                             }
                             
                             if (uiState.isRecording) {

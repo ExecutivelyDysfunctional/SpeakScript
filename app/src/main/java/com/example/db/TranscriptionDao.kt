@@ -13,6 +13,12 @@ interface TranscriptionDao {
     @Query("SELECT * FROM transcriptions ORDER BY timestamp DESC")
     fun getAllTranscriptions(): Flow<List<Transcription>>
 
+    @Query("SELECT * FROM transcriptions ORDER BY timestamp DESC")
+    suspend fun getAllTranscriptionsSync(): List<Transcription>
+
+    @Query("UPDATE transcriptions SET user_id = :newUserId WHERE user_id = :oldUserId OR user_id IS NULL OR user_id = ''")
+    suspend fun updateUserIdForLocalRecords(oldUserId: String, newUserId: String)
+
     @Query("SELECT * FROM transcriptions WHERE id = :id")
     suspend fun getTranscriptionById(id: String): Transcription?
 

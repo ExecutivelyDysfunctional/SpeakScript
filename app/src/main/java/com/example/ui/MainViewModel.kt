@@ -11,6 +11,7 @@ import com.example.BuildConfig
 import com.example.api.AiConstants
 import com.example.api.Content
 import com.example.api.GeminiApiService
+import com.example.api.GeminiStreamParser
 import com.example.api.GenerateContentRequest
 import com.example.api.GenerationConfig
 import com.example.api.GroqAudioClient
@@ -162,7 +163,7 @@ class MainViewModel : ViewModel() {
 
     private fun getActiveModelDisplayName(): String {
         return when (aiProvider) {
-            AiProvider.GEMINI -> "Gemini 3.6 Flash"
+            AiProvider.GEMINI -> "Gemini 3.5 Flash"
             AiProvider.OPENROUTER -> "OpenRouter (${AiConstants.OPENROUTER_DEFAULT_MODEL})"
             AiProvider.GROQ -> "Groq Whisper Large v3"
         }
@@ -176,8 +177,18 @@ class MainViewModel : ViewModel() {
         biometricParts: List<Part>,
         onChunkReceived: (String) -> Unit
     ): String {
+        if (bytes.isEmpty()) {
+            throw IllegalArgumentException("Audio file is empty or unreadable.")
+        }
+        if (bytes.size > 20 * 1024 * 1024) {
+            throw IllegalArgumentException("Audio file exceeds maximum size limit (20MB) for inline audio transcription. Please split the file or use a smaller recording.")
+        }
+
         return when (aiProvider) {
             AiProvider.GEMINI -> {
+                if (apiKey.isBlank()) {
+                    throw IllegalStateException("Gemini API key is missing. Please save a Gemini key in Settings.")
+                }
                 val contentParts = mutableListOf<Part>()
                 contentParts.addAll(biometricParts)
                 contentParts.add(Part(text = prompt))
@@ -191,35 +202,11 @@ class MainViewModel : ViewModel() {
                     request = request
                 )
 
-                var accumulated = ""
-                withContext(Dispatchers.IO) {
-                    response.byteStream().bufferedReader().use { reader ->
-                        var line: String?
-                        while (reader.readLine().also { line = it } != null) {
-                            if (line!!.startsWith("data: ")) {
-                                try {
-                                    val jsonStr = line!!.removePrefix("data: ").trim()
-                                    val chunk = JSONObject(jsonStr)
-                                    val candidates = chunk.optJSONArray("candidates")
-                                    if (candidates != null && candidates.length() > 0) {
-                                        val content = candidates.getJSONObject(0).optJSONObject("content")
-                                        val parts = content?.optJSONArray("parts")
-                                        if (parts != null && parts.length() > 0) {
-                                            val textPart = parts.getJSONObject(0).optString("text", "")
-                                            if (textPart.isNotEmpty()) {
-                                                accumulated += textPart
-                                                onChunkReceived(accumulated)
-                                            }
-                                        }
-                                    }
-                                } catch (e: Exception) {
-                                    // Ignore partial SSE chunk
-                                }
-                            }
-                        }
-                    }
-                }
-                accumulated
+                GeminiStreamParser.parseSseStream(
+                    responseBody = response,
+                    apiKeyToMask = apiKey,
+                    onChunkReceived = onChunkReceived
+                )
             }
 
             AiProvider.OPENROUTER -> {
@@ -306,14 +293,17 @@ class MainViewModel : ViewModel() {
 
     private suspend fun executeRoutedSummary(
         apiKey: String,
-        summaryPrompt: String
+        summaryPrompt: String,
+        isJsonMode: Boolean = false
     ): String? {
         return try {
             when (aiProvider) {
                 AiProvider.GEMINI -> {
+                    if (apiKey.isBlank()) return null
+                    val config = if (isJsonMode) GenerationConfig(responseMimeType = "application/json") else null
                     val summaryRequest = GenerateContentRequest(
                         contents = listOf(Content(parts = listOf(Part(text = summaryPrompt)))),
-                        generationConfig = GenerationConfig(responseMimeType = "application/json")
+                        generationConfig = config
                     )
                     val summaryResponse = RetrofitClient.service.generateContent(
                         model = AiConstants.GEMINI_DEFAULT_MODEL,
@@ -1258,7 +1248,7 @@ class MainViewModel : ViewModel() {
                     timestamp = now - 2 * 3600 * 1000L, // 2 hours ago (Today)
                     summary = "The team discussed the marketing launch date for the new productivity app and agreed on October 15th to allow sufficient time for beta feedback.",
                     category = "Meeting",
-                    modelName = "Gemini 3.6 Flash",
+                    modelName = "Gemini 3.5 Flash",
                     locationName = "Executive Boardroom",
                     activeSpeakersCsv = "Austin Grindy, Alex Rivera",
                     mentionedPeopleCsv = "Sarah Chen"
@@ -1272,7 +1262,7 @@ class MainViewModel : ViewModel() {
                     timestamp = now - 28 * 3600 * 1000L, // ~28 hours ago (Yesterday)
                     summary = "A personal reminder to buy milk, eggs, bread, and pick up dry cleaning after returning from the gym.",
                     category = "Personal",
-                    modelName = "Gemini 3.6 Flash",
+                    modelName = "Gemini 3.5 Flash",
                     locationName = "Home Office",
                     activeSpeakersCsv = "Austin Grindy",
                     mentionedPeopleCsv = null
@@ -1775,7 +1765,7 @@ class MainViewModel : ViewModel() {
                     $resultText
                 """.trimIndent()
 
-                val responseJson = executeRoutedSummary(apiKey, summaryPrompt)
+                val responseJson = executeRoutedSummary(apiKey, summaryPrompt, isJsonMode = true)
 
                 var parsedTitle: String? = null
                 var parsedSummary: String? = null
@@ -2159,9 +2149,6 @@ class MainViewModel : ViewModel() {
                         val request = GenerateContentRequest(
                             contents = listOf(
                                 Content(parts = listOf(Part(text = question)))
-                            ),
-                            generationConfig = GenerationConfig(
-                                thinkingConfig = ThinkingConfig(thinkingLevel = "HIGH")
                             )
                         )
                         val response = RetrofitClient.service.generateContent(
@@ -2793,10 +2780,20 @@ class MainViewModel : ViewModel() {
         } else {
             context.startService(intent)
         }
-        _uiState.value = _uiState.value.copy(
-            isRecording = true,
-            infoMessage = "Live recording started..."
-        )
+    }
+
+    fun pauseRecording(context: Context) {
+        val intent = Intent(context, com.example.service.RecordingService::class.java).apply {
+            action = com.example.service.RecordingService.ACTION_PAUSE_RECORDING
+        }
+        context.startService(intent)
+    }
+
+    fun resumeRecording(context: Context) {
+        val intent = Intent(context, com.example.service.RecordingService::class.java).apply {
+            action = com.example.service.RecordingService.ACTION_RESUME_RECORDING
+        }
+        context.startService(intent)
     }
 
     fun stopRecording(context: Context) {
@@ -2806,9 +2803,49 @@ class MainViewModel : ViewModel() {
         context.startService(intent)
         _uiState.value = _uiState.value.copy(
             isRecording = false,
+            isRecordingPaused = false,
             isLoading = true,
             statusMessage = "Finalizing live audio recording...",
             infoMessage = "Recording finalized! Saving audio file to device storage & preparing AI transcription..."
+        )
+    }
+
+    fun onRecordingStarted() {
+        _uiState.value = _uiState.value.copy(
+            isRecording = true,
+            isRecordingPaused = false,
+            infoMessage = "Live recording started..."
+        )
+    }
+
+    fun onRecordingPaused() {
+        _uiState.value = _uiState.value.copy(
+            isRecording = true,
+            isRecordingPaused = true,
+            infoMessage = "Live recording paused."
+        )
+    }
+
+    fun onRecordingResumed() {
+        _uiState.value = _uiState.value.copy(
+            isRecording = true,
+            isRecordingPaused = false,
+            infoMessage = "Live recording resumed."
+        )
+    }
+
+    fun onRecordingFailed(errorMessage: String) {
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            isRecordingPaused = false,
+            error = "Recording error: $errorMessage"
+        )
+    }
+
+    fun onRecordingStopped() {
+        _uiState.value = _uiState.value.copy(
+            isRecording = false,
+            isRecordingPaused = false
         )
     }
 
@@ -2866,6 +2903,7 @@ data class UiState(
     val error: String? = null,
     val infoMessage: String? = null,
     val isRecording: Boolean = false,
+    val isRecordingPaused: Boolean = false,
     val useBluetoothMic: Boolean = false,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val customApiKey: String = "",

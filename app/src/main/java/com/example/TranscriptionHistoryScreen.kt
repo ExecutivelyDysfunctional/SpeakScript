@@ -124,7 +124,7 @@ fun TranscriptionHistoryScreen(
                 ?.ifBlank { null }
                 ?: "Recording Session"
             val masterSummary = sortedParts.mapNotNull { it.summary }.firstOrNull { it.isNotBlank() }
-            val model = sortedParts.mapNotNull { it.modelName }.firstOrNull { it.isNotBlank() } ?: "Gemini 3.6 Flash"
+            val model = sortedParts.mapNotNull { it.modelName }.firstOrNull { it.isNotBlank() } ?: "Gemini 3.5 Flash"
             val totalDuration = sortedParts.sumOf { it.partDurationMs ?: 0 }
             val time = firstPart?.timestamp ?: System.currentTimeMillis()
 

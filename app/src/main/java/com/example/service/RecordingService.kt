@@ -25,6 +25,8 @@ class RecordingService : Service() {
 
     private var currentOutputFile: File? = null
     @Volatile private var isRecording = false
+    @Volatile private var isPaused = false
+    private var currentUseBluetooth = false
     private var actualSampleRate = 16000
     private var isBluetoothRouteActive = false
     private val recordingLock = Any()
@@ -39,41 +41,144 @@ class RecordingService : Service() {
         val action = intent?.action
         when (action) {
             ACTION_START_RECORDING -> {
-                val useBluetooth = intent.getBooleanExtra(EXTRA_USE_BLUETOOTH, false)
-                startForegroundNotification(useBluetooth)
+                val useBluetooth = intent?.getBooleanExtra(EXTRA_USE_BLUETOOTH, false) ?: false
+                currentUseBluetooth = useBluetooth
+                isPaused = false
+                startForegroundNotification(useBluetooth, isPaused = false)
                 startRecording(useBluetooth)
+            }
+            ACTION_PAUSE_RECORDING -> {
+                pauseRecording()
+            }
+            ACTION_RESUME_RECORDING -> {
+                resumeRecording()
             }
             ACTION_STOP_RECORDING -> {
                 stopRecording()
-                stopForeground(true)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                } else {
+                    @Suppress("DEPRECATION")
+                    stopForeground(true)
+                }
                 stopSelf()
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startForegroundNotification(useBluetooth: Boolean) {
-        val channelId = "recording_channel"
+    private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                channelId,
-                "Audio Recording",
+                CHANNEL_ID,
+                "Audio Recording Controls",
                 NotificationManager.IMPORTANCE_LOW
-            )
+            ).apply {
+                description = "Ongoing audio recording controls and status notifications"
+            }
             val manager = getSystemService(NotificationManager::class.java)
             manager?.createNotificationChannel(channel)
         }
+    }
 
-        val micType = if (useBluetooth) "Bluetooth Earbud / Headset" else "Phone Microphone"
-        val notification = NotificationCompat.Builder(this, channelId)
-            .setContentTitle("Recording Audio")
-            .setContentText("Capturing from $micType")
+    private fun buildRecordingNotification(useBluetooth: Boolean, isPaused: Boolean): Notification {
+        val openAppIntent = Intent(this, com.example.MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val openAppPendingIntent = PendingIntent.getActivity(
+            this,
+            10,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val stopIntent = Intent(this, RecordingService::class.java).apply {
+            action = ACTION_STOP_RECORDING
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            11,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val togglePauseIntent = Intent(this, RecordingService::class.java).apply {
+            action = if (isPaused) ACTION_RESUME_RECORDING else ACTION_PAUSE_RECORDING
+        }
+        val togglePausePendingIntent = PendingIntent.getService(
+            this,
+            12,
+            togglePauseIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val micName = if (useBluetooth) "Bluetooth headset" else "Phone microphone"
+        val title = if (isPaused) "Recording Paused" else "Recording in Progress"
+        val contentText = if (isPaused) "Paused capturing from $micName" else "Capturing from $micName"
+
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setContentTitle(title)
+            .setContentText(contentText)
+            .setContentIntent(openAppPendingIntent)
             .setOngoing(true)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
-            .build()
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
 
+        if (isPaused) {
+            builder.addAction(
+                android.R.drawable.ic_media_play,
+                "Resume",
+                togglePausePendingIntent
+            )
+        } else {
+            builder.addAction(
+                android.R.drawable.ic_media_pause,
+                "Pause",
+                togglePausePendingIntent
+            )
+        }
+
+        builder.addAction(
+            android.R.drawable.ic_menu_close_clear_cancel,
+            "Stop",
+            stopPendingIntent
+        )
+
+        return builder.build()
+    }
+
+    private fun startForegroundNotification(useBluetooth: Boolean, isPaused: Boolean) {
+        createNotificationChannel()
+        val notification = buildRecordingNotification(useBluetooth, isPaused)
         startForeground(NOTIFICATION_ID, notification)
+    }
+
+    private fun updateRecordingNotification(useBluetooth: Boolean, isPaused: Boolean) {
+        val notification = buildRecordingNotification(useBluetooth, isPaused)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.notify(NOTIFICATION_ID, notification)
+    }
+
+    private fun pauseRecording() {
+        synchronized(recordingLock) {
+            if (isRecording && !isPaused) {
+                isPaused = true
+                updateRecordingNotification(currentUseBluetooth, isPaused = true)
+                sendBroadcast(Intent(ACTION_RECORDING_PAUSED).setPackage(packageName))
+            }
+        }
+    }
+
+    private fun resumeRecording() {
+        synchronized(recordingLock) {
+            if (isRecording && isPaused) {
+                isPaused = false
+                updateRecordingNotification(currentUseBluetooth, isPaused = false)
+                sendBroadcast(Intent(ACTION_RECORDING_RESUMED).setPackage(packageName))
+            }
+        }
     }
 
     private fun configureBluetoothAudioRoute(useBluetooth: Boolean): Boolean {
@@ -209,6 +314,12 @@ class RecordingService : Service() {
 
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 Log.e(TAG, "RECORD_AUDIO permission missing, aborting recording")
+                sendBroadcast(Intent(ACTION_RECORDING_FAILED).apply {
+                    putExtra(EXTRA_ERROR_MESSAGE, "RECORD_AUDIO permission missing.")
+                    setPackage(packageName)
+                })
+                stopForeground(true)
+                stopSelf()
                 return
             }
 
@@ -218,6 +329,12 @@ class RecordingService : Service() {
             if (recordPair == null) {
                 Log.e(TAG, "Could not initialize AudioRecord with any configuration")
                 releaseBluetoothAudioRoute()
+                sendBroadcast(Intent(ACTION_RECORDING_FAILED).apply {
+                    putExtra(EXTRA_ERROR_MESSAGE, "Could not initialize microphone recorder.")
+                    setPackage(packageName)
+                })
+                stopForeground(true)
+                stopSelf()
                 return
             }
 
@@ -225,6 +342,11 @@ class RecordingService : Service() {
             audioRecord = record
             actualSampleRate = rate
             isRecording = true
+
+            sendBroadcast(Intent(ACTION_RECORDING_STARTED).apply {
+                putExtra(EXTRA_USE_BLUETOOTH, useBluetooth)
+                setPackage(packageName)
+            })
 
             val outputDir = File(filesDir, "recordings")
             if (!outputDir.exists()) outputDir.mkdirs()
@@ -240,6 +362,10 @@ class RecordingService : Service() {
                     record.startRecording()
                     FileOutputStream(currentOutputFile).use { fos ->
                         while (isRecording && record.recordingState == AudioRecord.RECORDSTATE_RECORDING && isActive) {
+                            if (isPaused) {
+                                delay(100)
+                                continue
+                            }
                             val read = record.read(buffer, 0, buffer.size)
                             if (read > 0) {
                                 fos.write(buffer, 0, read)
@@ -265,6 +391,9 @@ class RecordingService : Service() {
                 return
             }
             isRecording = false
+            isPaused = false
+
+            sendBroadcast(Intent(ACTION_RECORDING_STOPPED).setPackage(packageName))
 
             try {
                 if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
@@ -428,10 +557,22 @@ class RecordingService : Service() {
     companion object {
         private const val TAG = "RecordingService"
         const val NOTIFICATION_ID = 1001
+        const val CHANNEL_ID = "recording_channel"
+
         const val ACTION_START_RECORDING = "com.example.action.START_RECORDING"
         const val ACTION_STOP_RECORDING = "com.example.action.STOP_RECORDING"
+        const val ACTION_PAUSE_RECORDING = "com.example.action.PAUSE_RECORDING"
+        const val ACTION_RESUME_RECORDING = "com.example.action.RESUME_RECORDING"
+
+        const val ACTION_RECORDING_STARTED = "com.example.action.RECORDING_STARTED"
+        const val ACTION_RECORDING_PAUSED = "com.example.action.RECORDING_PAUSED"
+        const val ACTION_RECORDING_RESUMED = "com.example.action.RECORDING_RESUMED"
+        const val ACTION_RECORDING_FAILED = "com.example.action.RECORDING_FAILED"
+        const val ACTION_RECORDING_STOPPED = "com.example.action.RECORDING_STOPPED"
         const val ACTION_RECORDING_FINISHED = "com.example.action.RECORDING_FINISHED"
+
         const val EXTRA_USE_BLUETOOTH = "com.example.extra.USE_BLUETOOTH"
         const val EXTRA_WAV_PATH = "com.example.extra.WAV_PATH"
+        const val EXTRA_ERROR_MESSAGE = "com.example.extra.ERROR_MESSAGE"
     }
 }
