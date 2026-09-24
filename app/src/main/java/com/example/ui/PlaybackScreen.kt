@@ -569,8 +569,13 @@ fun PlaybackScreen(
         map
     }
 
+    // Durations fingerprint for efficient remember keying without intermediate map creation
+    val durationsFingerprint = remember(partDurationsMap) {
+        partDurationsMap.values.sum()
+    }
+
     // Cumulative Offsets: offset for part i is sum of durations of parts 0 until i
-    val cumulativeOffsets = remember(partDurationsMap.toMap(), orderedParts.size) {
+    val cumulativeOffsets = remember(orderedParts, durationsFingerprint) {
         val offsets = IntArray(orderedParts.size)
         var sum = 0
         for (i in orderedParts.indices) {
@@ -580,7 +585,7 @@ fun PlaybackScreen(
         offsets
     }
 
-    val totalCumulativeDurationMs = remember(partDurationsMap.toMap(), orderedParts.size) {
+    val totalCumulativeDurationMs = remember(orderedParts, durationsFingerprint) {
         var sum = 0
         for (i in orderedParts.indices) {
             sum += partDurationsMap[i] ?: 5000
@@ -598,7 +603,7 @@ fun PlaybackScreen(
     var autoScrollEnabled by remember { mutableStateOf(true) }
 
     // Unified Cumulative Transcript Lines Engine
-    val cumulativeLines = remember(orderedParts, partDurationsMap.toMap(), cumulativeOffsets) {
+    val cumulativeLines = remember(orderedParts, durationsFingerprint, cumulativeOffsets) {
         val allLines = mutableListOf<CumulativeTranscriptLine>()
         var globalLineCounter = 0
 
@@ -792,7 +797,7 @@ fun PlaybackScreen(
                     // Ignore transient exceptions
                 }
             }
-            delay(40)
+            delay(120)
         }
     }
 
@@ -888,6 +893,8 @@ fun PlaybackScreen(
         }
     }
 
+    var lastScrolledIndex by remember { mutableStateOf<Int?>(null) }
+
     // Smooth auto-scroll to current active playing line
     LaunchedEffect(activeLineIndex, isPlaying, isScrubbing, autoScrollEnabled, filteredLines) {
         if ((isPlaying || isScrubbing) && autoScrollEnabled && activeLineIndex >= 0) {
@@ -897,10 +904,14 @@ fun PlaybackScreen(
                 if (filteredIdx >= 0) {
                     val headerOffset = if (masterSummary != null) 3 else 2
                     val targetListIndex = headerOffset + filteredIdx
-                    try {
-                        listState.animateScrollToItem(targetListIndex.coerceAtLeast(0))
-                    } catch (e: Exception) {
-                        // Ignore scroll animation cancellations
+                    val isAlreadyVisible = listState.layoutInfo.visibleItemsInfo.any { it.index == targetListIndex }
+                    if (!isAlreadyVisible && targetListIndex != lastScrolledIndex) {
+                        try {
+                            listState.animateScrollToItem(targetListIndex.coerceAtLeast(0))
+                            lastScrolledIndex = targetListIndex
+                        } catch (e: Exception) {
+                            // Ignore scroll animation cancellations
+                        }
                     }
                 }
             }

@@ -235,7 +235,7 @@ class MainViewModel : ViewModel() {
                     request = request
                 )
 
-                var accumulated = ""
+                val accumulated = StringBuilder()
                 withContext(Dispatchers.IO) {
                     response.byteStream().bufferedReader().use { reader ->
                         var line: String?
@@ -251,8 +251,8 @@ class MainViewModel : ViewModel() {
                                         val contentStr = delta?.optString("content")
                                             ?: choices.getJSONObject(0).optJSONObject("message")?.optString("content")
                                         if (!contentStr.isNullOrEmpty()) {
-                                            accumulated += contentStr
-                                            onChunkReceived(accumulated)
+                                            accumulated.append(contentStr)
+                                            onChunkReceived(accumulated.toString())
                                         }
                                     }
                                 } catch (e: Exception) {
@@ -262,7 +262,7 @@ class MainViewModel : ViewModel() {
                         }
                     }
                 }
-                accumulated
+                accumulated.toString()
             }
 
             AiProvider.GROQ -> {
