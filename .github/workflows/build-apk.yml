@@ -61,7 +61,7 @@ jobs:
           # assembleDebug. Do not generate or store a release keystore in CI.
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android SDK components
         run: |
