@@ -863,19 +863,23 @@ fun PlaybackScreen(
         currentGlobalPositionMs
     }
 
-    // Determine Active Transcript Line across whole session
+    // Determine Active Transcript Line across whole session via Binary Search
     val activeLineIndex = remember(cumulativeLines, effectiveGlobalPositionMs) {
         if (cumulativeLines.isEmpty()) -1
         else {
-            val match = cumulativeLines.indexOfFirst { line ->
-                effectiveGlobalPositionMs in line.globalStartMs until line.globalEndMs
+            var low = 0
+            var high = cumulativeLines.size - 1
+            var ans = -1
+            while (low <= high) {
+                val mid = (low + high) ushr 1
+                if (cumulativeLines[mid].globalStartMs <= effectiveGlobalPositionMs) {
+                    ans = mid
+                    low = mid + 1
+                } else {
+                    high = mid - 1
+                }
             }
-            if (match != -1) {
-                match
-            } else {
-                val lastPassed = cumulativeLines.indexOfLast { it.globalStartMs <= effectiveGlobalPositionMs }
-                if (lastPassed != -1) lastPassed else 0
-            }
+            if (ans != -1) ans else 0
         }
     }
 
@@ -900,7 +904,7 @@ fun PlaybackScreen(
         if ((isPlaying || isScrubbing) && autoScrollEnabled && activeLineIndex >= 0) {
             val activeLine = cumulativeLines.getOrNull(activeLineIndex)
             if (activeLine != null) {
-                val filteredIdx = filteredLines.indexOfFirst { it.globalId == activeLine.globalId }
+                val filteredIdx = filteredLines.binarySearch { it.globalId.compareTo(activeLine.globalId) }
                 if (filteredIdx >= 0) {
                     val headerOffset = if (masterSummary != null) 3 else 2
                     val targetListIndex = headerOffset + filteredIdx

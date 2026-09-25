@@ -37,6 +37,18 @@ sealed class JournalEntry {
     data class Single(val record: TranscriptionRecord) : JournalEntry() {
         override val sortTimestamp: Long get() = record.timestamp
         override val entryId: String get() = record.id
+
+        val transcriptionLower by lazy { record.transcription.lowercase() }
+        val summaryLower by lazy { record.summary?.lowercase() ?: "" }
+        val speakerLabelsLower by lazy { record.speakerLabels?.lowercase() ?: "" }
+        val locationNameLower by lazy { record.locationName?.lowercase() ?: "" }
+        val activeSpeakersCsvLower by lazy { record.activeSpeakersCsv?.lowercase() ?: "" }
+        val mentionedPeopleCsvLower by lazy { record.mentionedPeopleCsv?.lowercase() ?: "" }
+
+        private var cachedDateStr: String? = null
+        fun getFormattedDate(formatter: SimpleDateFormat): String {
+            return cachedDateStr ?: formatter.format(Date(record.timestamp)).lowercase().also { cachedDateStr = it }
+        }
     }
 
     data class SessionGroup(
@@ -50,6 +62,16 @@ sealed class JournalEntry {
     ) : JournalEntry() {
         override val sortTimestamp: Long get() = timestamp
         override val entryId: String get() = "session_$sessionId"
+
+        val titleLower by lazy { sessionTitle.lowercase() }
+        val masterSummaryLower by lazy { masterSummary?.lowercase() ?: "" }
+
+        val partSingles by lazy { parts.map { Single(it) } }
+
+        private var cachedDateStr: String? = null
+        fun getFormattedDate(formatter: SimpleDateFormat): String {
+            return cachedDateStr ?: formatter.format(Date(timestamp)).lowercase().also { cachedDateStr = it }
+        }
     }
 }
 
@@ -83,6 +105,13 @@ fun TranscriptionHistoryScreen(
     audioPlayerContent: @Composable (String) -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var debouncedSearchQuery by remember { mutableStateOf("") }
+
+    LaunchedEffect(searchQuery) {
+        kotlinx.coroutines.delay(300)
+        debouncedSearchQuery = searchQuery
+    }
+
     var selectedSpeakerFilter by remember { mutableStateOf<String?>(null) }
     var selectedLocationFilter by remember { mutableStateOf<String?>(null) }
     var selectedDateBucketFilter by remember { mutableStateOf(DateBucketFilter.ALL) }
@@ -180,110 +209,129 @@ fun TranscriptionHistoryScreen(
         locationSet.sorted()
     }
 
-    val trimmedQuery = searchQuery.trim().lowercase()
-    val speakerFilterLower = selectedSpeakerFilter?.trim()?.lowercase()
-    val locationFilterLower = selectedLocationFilter?.trim()?.lowercase()
-
     // Filter entries based on search query, speaker, location, and date bucket
-    val filteredEntries = journalEntries.filter { entry ->
-        // 1. Search Query Filter
-        val matchesQuery = if (trimmedQuery.isEmpty()) true else {
-            when (entry) {
-                is JournalEntry.Single -> {
-                    val dateStr = dateFormat.format(Date(entry.record.timestamp)).lowercase()
-                    dateStr.contains(trimmedQuery) ||
-                            entry.record.transcription.lowercase().contains(trimmedQuery) ||
-                            (entry.record.summary?.lowercase()?.contains(trimmedQuery) == true) ||
-                            (entry.record.speakerLabels?.lowercase()?.contains(trimmedQuery) == true) ||
-                            (entry.record.locationName?.lowercase()?.contains(trimmedQuery) == true) ||
-                            (entry.record.activeSpeakersCsv?.lowercase()?.contains(trimmedQuery) == true) ||
-                            (entry.record.mentionedPeopleCsv?.lowercase()?.contains(trimmedQuery) == true)
-                }
-                is JournalEntry.SessionGroup -> {
-                    val dateStr = dateFormat.format(Date(entry.timestamp)).lowercase()
-                    entry.sessionTitle.lowercase().contains(trimmedQuery) ||
-                            dateStr.contains(trimmedQuery) ||
-                            (entry.masterSummary?.lowercase()?.contains(trimmedQuery) == true) ||
-                            entry.parts.any { p ->
-                                p.transcription.lowercase().contains(trimmedQuery) ||
-                                        (p.speakerLabels?.lowercase()?.contains(trimmedQuery) == true) ||
-                                        (p.locationName?.lowercase()?.contains(trimmedQuery) == true) ||
-                                        (p.activeSpeakersCsv?.lowercase()?.contains(trimmedQuery) == true) ||
-                                        (p.mentionedPeopleCsv?.lowercase()?.contains(trimmedQuery) == true)
-                            }
-                }
-            }
-        }
-        if (!matchesQuery) return@filter false
+    val filteredEntries = remember(
+        journalEntries,
+        debouncedSearchQuery,
+        selectedSpeakerFilter,
+        selectedLocationFilter,
+        selectedDateBucketFilter,
+        todayStr,
+        yesterdayStr
+    ) {
+        val nowCal = Calendar.getInstance()
+        val nowYear = nowCal.get(Calendar.YEAR)
+        val nowMonth = nowCal.get(Calendar.MONTH)
+        val nowDay = nowCal.get(Calendar.DAY_OF_MONTH)
+        val entryCal = Calendar.getInstance()
 
-        // 2. Specific Speaker Filter
-        if (speakerFilterLower != null) {
-            val matchesSpeaker = when (entry) {
-                is JournalEntry.Single -> {
-                    (entry.record.activeSpeakersCsv?.lowercase()?.contains(speakerFilterLower) == true) ||
-                            (entry.record.speakerLabels?.lowercase()?.contains(speakerFilterLower) == true) ||
-                            (entry.record.transcription.lowercase().contains(speakerFilterLower))
-                }
-                is JournalEntry.SessionGroup -> {
-                    entry.parts.any { p ->
-                        (p.activeSpeakersCsv?.lowercase()?.contains(speakerFilterLower) == true) ||
-                                (p.speakerLabels?.lowercase()?.contains(speakerFilterLower) == true) ||
-                                (p.transcription.lowercase().contains(speakerFilterLower))
+        val speakerFilterLower = selectedSpeakerFilter?.trim()?.lowercase()
+        val locationFilterLower = selectedLocationFilter?.trim()?.lowercase()
+        val trimmedQuery = debouncedSearchQuery.trim().lowercase()
+
+        journalEntries.filter { entry ->
+            // 1. Search Query Filter
+            val matchesQuery = if (trimmedQuery.isEmpty()) true else {
+                when (entry) {
+                    is JournalEntry.Single -> {
+                        val dateStr = entry.getFormattedDate(dateFormat)
+                        dateStr.contains(trimmedQuery) ||
+                                entry.transcriptionLower.contains(trimmedQuery) ||
+                                entry.summaryLower.contains(trimmedQuery) ||
+                                entry.speakerLabelsLower.contains(trimmedQuery) ||
+                                entry.locationNameLower.contains(trimmedQuery) ||
+                                entry.activeSpeakersCsvLower.contains(trimmedQuery) ||
+                                entry.mentionedPeopleCsvLower.contains(trimmedQuery)
+                    }
+                    is JournalEntry.SessionGroup -> {
+                        val dateStr = entry.getFormattedDate(dateFormat)
+                        entry.titleLower.contains(trimmedQuery) ||
+                                dateStr.contains(trimmedQuery) ||
+                                entry.masterSummaryLower.contains(trimmedQuery) ||
+                                entry.partSingles.any { p ->
+                                    p.transcriptionLower.contains(trimmedQuery) ||
+                                            p.speakerLabelsLower.contains(trimmedQuery) ||
+                                            p.locationNameLower.contains(trimmedQuery) ||
+                                            p.activeSpeakersCsvLower.contains(trimmedQuery) ||
+                                            p.mentionedPeopleCsvLower.contains(trimmedQuery)
+                                }
                     }
                 }
             }
-            if (!matchesSpeaker) return@filter false
-        }
+            if (!matchesQuery) return@filter false
 
-        // 3. Location Filter
-        if (locationFilterLower != null) {
-            val matchesLocation = when (entry) {
-                is JournalEntry.Single -> {
-                    entry.record.locationName?.lowercase()?.contains(locationFilterLower) == true
+            // 2. Specific Speaker Filter
+            if (speakerFilterLower != null) {
+                val matchesSpeaker = when (entry) {
+                    is JournalEntry.Single -> {
+                        entry.activeSpeakersCsvLower.contains(speakerFilterLower) ||
+                                entry.speakerLabelsLower.contains(speakerFilterLower) ||
+                                entry.transcriptionLower.contains(speakerFilterLower)
+                    }
+                    is JournalEntry.SessionGroup -> {
+                        entry.partSingles.any { p ->
+                            p.activeSpeakersCsvLower.contains(speakerFilterLower) ||
+                                    p.speakerLabelsLower.contains(speakerFilterLower) ||
+                                    p.transcriptionLower.contains(speakerFilterLower)
+                        }
+                    }
                 }
-                is JournalEntry.SessionGroup -> {
-                    entry.parts.any { p -> p.locationName?.lowercase()?.contains(locationFilterLower) == true }
-                }
+                if (!matchesSpeaker) return@filter false
             }
-            if (!matchesLocation) return@filter false
-        }
 
-        // 4. Date Range / Time Bucket Filter
-        when (selectedDateBucketFilter) {
-            DateBucketFilter.ALL -> true
-            DateBucketFilter.TODAY -> {
-                val recordDay = dayFormat.format(Date(entry.sortTimestamp))
-                recordDay == todayStr
+            // 3. Location Filter
+            if (locationFilterLower != null) {
+                val matchesLocation = when (entry) {
+                    is JournalEntry.Single -> {
+                        entry.locationNameLower.contains(locationFilterLower)
+                    }
+                    is JournalEntry.SessionGroup -> {
+                        entry.partSingles.any { p -> p.locationNameLower.contains(locationFilterLower) }
+                    }
+                }
+                if (!matchesLocation) return@filter false
             }
-            DateBucketFilter.PAST_7_DAYS -> {
-                System.currentTimeMillis() - entry.sortTimestamp <= 7 * 86400000L
-            }
-            DateBucketFilter.THIS_MONTH -> {
-                val nowCal = Calendar.getInstance()
-                val entryCal = Calendar.getInstance().apply { timeInMillis = entry.sortTimestamp }
-                nowCal.get(Calendar.YEAR) == entryCal.get(Calendar.YEAR) &&
-                        nowCal.get(Calendar.MONTH) == entryCal.get(Calendar.MONTH)
+
+            // 4. Date Range / Time Bucket Filter
+            when (selectedDateBucketFilter) {
+                DateBucketFilter.ALL -> true
+                DateBucketFilter.TODAY -> {
+                    entryCal.timeInMillis = entry.sortTimestamp
+                    entryCal.get(Calendar.YEAR) == nowYear &&
+                            entryCal.get(Calendar.MONTH) == nowMonth &&
+                            entryCal.get(Calendar.DAY_OF_MONTH) == nowDay
+                }
+                DateBucketFilter.PAST_7_DAYS -> {
+                    System.currentTimeMillis() - entry.sortTimestamp <= 7 * 86400000L
+                }
+                DateBucketFilter.THIS_MONTH -> {
+                    entryCal.timeInMillis = entry.sortTimestamp
+                    entryCal.get(Calendar.YEAR) == nowYear &&
+                            entryCal.get(Calendar.MONTH) == nowMonth
+                }
             }
         }
     }
 
     // Group filtered items by Date Header
-    val groupedEntries = filteredEntries.groupBy { entry ->
-        val recordDay = dayFormat.format(Date(entry.sortTimestamp))
-        when {
-            recordDay == todayStr -> "Today"
-            recordDay == yesterdayStr -> "Yesterday"
-            System.currentTimeMillis() - entry.sortTimestamp < 7 * 86400000L -> "This Week"
-            else -> "Older"
-        }
-    }.toSortedMap(compareBy { header ->
-        when (header) {
-            "Today" -> 0
-            "Yesterday" -> 1
-            "This Week" -> 2
-            else -> 3
-        }
-    })
+    val groupedEntries = remember(filteredEntries, todayStr, yesterdayStr) {
+        filteredEntries.groupBy { entry ->
+            val recordDay = dayFormat.format(Date(entry.sortTimestamp))
+            when {
+                recordDay == todayStr -> "Today"
+                recordDay == yesterdayStr -> "Yesterday"
+                System.currentTimeMillis() - entry.sortTimestamp < 7 * 86400000L -> "This Week"
+                else -> "Older"
+            }
+        }.toSortedMap(compareBy { header ->
+            when (header) {
+                "Today" -> 0
+                "Yesterday" -> 1
+                "This Week" -> 2
+                else -> 3
+            }
+        })
+    }
 
     // Confirmation dialog for deleting a session
     if (sessionToDelete != null) {
